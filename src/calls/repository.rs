@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS managed_call_effects (
  claim_generation INTEGER NOT NULL DEFAULT 0, claim_until_ms INTEGER,
  last_error TEXT);
 CREATE INDEX IF NOT EXISTS managed_call_effects_due ON managed_call_effects(state, next_attempt_ms, claim_until_ms);
+CREATE INDEX IF NOT EXISTS managed_call_effects_call_lease ON managed_call_effects(authority, call_id, state, claim_until_ms);
 INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(1);
 CREATE TABLE IF NOT EXISTS managed_call_host (
  authority TEXT NOT NULL, call_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
@@ -943,7 +944,7 @@ impl CallRepository for SqliteCallRepository {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(storage)?;
             let mut claims = Vec::new();
             {
-                let mut stmt = tx.prepare("SELECT id,authority,call_id,revision,effect_json,claim_generation,attempts FROM managed_call_effects WHERE (state='pending' AND next_attempt_ms<=?1) OR (state='claimed' AND claim_until_ms<=?1) ORDER BY next_attempt_ms,id LIMIT ?2").map_err(storage)?;
+                let mut stmt = tx.prepare("SELECT e.id,e.authority,e.call_id,e.revision,e.effect_json,e.claim_generation,e.attempts FROM managed_call_effects e WHERE ((e.state='pending' AND e.next_attempt_ms<=?1) OR (e.state='claimed' AND e.claim_until_ms<=?1)) AND NOT EXISTS (SELECT 1 FROM managed_call_effects active WHERE active.authority=e.authority AND active.call_id=e.call_id AND active.state='claimed' AND active.claim_until_ms>?1) ORDER BY e.next_attempt_ms,e.id LIMIT ?2").map_err(storage)?;
                 let rows = stmt.query_map(params![now_ms, limit as i64], |row| Ok((
                     row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, u64>(3)?,
                     row.get::<_, String>(4)?, row.get::<_, u64>(5)?, row.get::<_, u32>(6)?))).map_err(storage)?;
