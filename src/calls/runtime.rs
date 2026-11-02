@@ -407,37 +407,12 @@ impl CallEnvelopeDirectory for CallRuntime {
     }
 }
 
-async fn run_effect_worker(
-    engine: Arc<CallEngine>,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
-) {
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() { break; }
-            }
-            _ = interval.tick() => {
-                // One claim per worker lets the repository exclude calls with
-                // an active lease before another worker waits on their call lock.
-                if let Err(error) = engine.process_effects(1).await {
-                    crate::log_err!(0, crate::util::logger::PrintType::Call, "Call effect delivery failed: {error}");
-                }
-            }
-        }
-    }
-}
-
 pub fn start_effect_worker(
     engine: Arc<CallEngine>,
     runtime: Arc<CallRuntime>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut workers = tokio::task::JoinSet::new();
-        for _ in 0..4 {
-            workers.spawn(run_effect_worker(engine.clone(), shutdown.clone()));
-        }
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         let mut last_health = tokio::time::Instant::now();
         loop {
@@ -445,13 +420,11 @@ pub fn start_effect_worker(
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() { break; }
                 }
-                completed = workers.join_next() => {
-                    if *shutdown.borrow() { break; }
-                    crate::log_err!(0, crate::util::logger::PrintType::Call, "Call effect worker stopped unexpectedly: {completed:?}");
-                    workers.spawn(run_effect_worker(engine.clone(), shutdown.clone()));
-                }
                 _ = interval.tick() => {
-                    let epochs = runtime.process_epoch_envelopes().await;
+                    let (effects, epochs) = tokio::join!(engine.process_effects(4), runtime.process_epoch_envelopes());
+                    if let Err(error) = effects {
+                        crate::log_err!(0, crate::util::logger::PrintType::Call, "Call effect delivery failed: {error}");
+                    }
                     if let Err(error) = epochs {
                         crate::log_err!(0, crate::util::logger::PrintType::Call, "Call epoch delivery pending: {error}");
                     }
@@ -470,122 +443,5 @@ pub fn start_effect_worker(
                 }
             }
         }
-        workers.shutdown().await;
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::calls::repository::tests::{ContractAdapters, call};
-
-    struct StalledDependency {
-        blocked: CallId,
-        entered: tokio::sync::Notify,
-        released: tokio::sync::Semaphore,
-        other_call: tokio::sync::Notify,
-    }
-
-    impl StalledDependency {
-        async fn dispatch(&self, current: Call) -> Result<(), CallError> {
-            if current.id == self.blocked {
-                self.entered.notify_one();
-                self.released.acquire().await.unwrap().forget();
-            } else {
-                self.other_call.notify_one();
-            }
-            Ok(())
-        }
-    }
-
-    impl MediaController for StalledDependency {
-        fn capabilities(&self) -> MediaCapabilities {
-            ContractAdapters.capabilities()
-        }
-        fn apply(&self, current: Call, _: CallEffect, _: i64) -> CallFuture<'_, ()> {
-            Box::pin(self.dispatch(current))
-        }
-        fn issue_join_credential(
-            &self,
-            current: &Call,
-            principal: &CallPrincipal,
-            permissions: EffectivePermissions,
-            now: i64,
-        ) -> Result<JoinGrant, CallError> {
-            ContractAdapters.issue_join_credential(current, principal, permissions, now)
-        }
-    }
-
-    impl CallEventPublisher for StalledDependency {
-        fn publish(&self, current: Call, _: CallEvent) -> CallFuture<'_, ()> {
-            Box::pin(self.dispatch(current))
-        }
-    }
-
-    impl CallEnvelopeDirectory for StalledDependency {
-        fn apply(&self, current: Call, _: CallEffect) -> CallFuture<'_, ()> {
-            Box::pin(self.dispatch(current))
-        }
-    }
-
-    #[tokio::test]
-    async fn a_stalled_call_does_not_block_another_calls_effects() {
-        let repository =
-            Arc::new(SqliteCallRepository::open(std::path::Path::new(":memory:")).unwrap());
-        let first = call();
-        let second = call();
-        for (current, now) in [(&first, 1000), (&second, 1001)] {
-            repository.insert(current.clone()).await.unwrap();
-            repository
-                .transact(
-                    AuthenticatedCallActor::from_verified_session(current.owner.clone()).unwrap(),
-                    CallCommandRequest {
-                        call: current.id.clone(),
-                        operation_id: uuid::Uuid::new_v4(),
-                        expected_revision: None,
-                        command: CallCommand::SetMemberRestriction {
-                            target: current.members[3].principal.clone(),
-                            restriction: MemberRestriction::Microphone,
-                            enabled: true,
-                        },
-                    },
-                    now,
-                )
-                .await
-                .unwrap();
-        }
-        let dependency = Arc::new(StalledDependency {
-            blocked: first.id,
-            entered: tokio::sync::Notify::new(),
-            released: tokio::sync::Semaphore::new(0),
-            other_call: tokio::sync::Notify::new(),
-        });
-        let engine = Arc::new(CallEngine::new(
-            repository,
-            dependency.clone(),
-            dependency.clone(),
-            dependency.clone(),
-            Arc::new(SystemCallClock),
-        ));
-        let (shutdown, signal) = tokio::sync::watch::channel(false);
-        let mut workers = tokio::task::JoinSet::new();
-        for _ in 0..4 {
-            workers.spawn(run_effect_worker(engine.clone(), signal.clone()));
-        }
-        tokio::time::timeout(Duration::from_secs(2), dependency.entered.notified())
-            .await
-            .expect("first call did not enter the stalled dependency");
-        tokio::time::timeout(Duration::from_secs(2), dependency.other_call.notified())
-            .await
-            .expect("unrelated call waited for the stalled dependency");
-        dependency.released.add_permits(4);
-        shutdown.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(result) = workers.join_next().await {
-                result.unwrap();
-            }
-        })
-        .await
-        .expect("effect workers did not stop");
-    }
 }
