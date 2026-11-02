@@ -259,6 +259,42 @@ async fn demotion_and_moderator_mutation_have_a_single_serial_order() {
 }
 
 #[tokio::test]
+async fn active_call_leases_do_not_block_claiming_another_call() {
+    let repo = memory();
+    let first = call();
+    let second = call();
+    for (call, now) in [(&first, 1000), (&second, 1001)] {
+        repo.insert(call.clone()).await.unwrap();
+        repo.transact(
+            actor(1),
+            restriction(call, MemberRestriction::Microphone),
+            now,
+        )
+        .await
+        .unwrap();
+    }
+    let first_claim = repo.claim_effects(1001, 1).await.unwrap().pop().unwrap();
+    assert_eq!(first_claim.call, first.id);
+    let second_claim = repo.claim_effects(1001, 1).await.unwrap().pop().unwrap();
+    assert_eq!(second_claim.call, second.id);
+    assert!(repo.claim_effects(1001, 1).await.unwrap().is_empty());
+    repo.finish_effect(first_claim, Ok(()), 1002).await.unwrap();
+    let next = repo.claim_effects(1002, 1).await.unwrap().pop().unwrap();
+    assert_eq!(next.call, first.id);
+    let reclaimed = repo.claim_effects(61_001, 1).await.unwrap().pop().unwrap();
+    assert_eq!(reclaimed.id, second_claim.id);
+    assert_eq!(
+        reclaimed.claim_generation,
+        second_claim.claim_generation + 1
+    );
+    assert!(
+        repo.finish_effect(second_claim, Ok(()), 61_001)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn expired_and_reclaimed_leases_fence_prepare_and_acknowledgement() {
     let repo = memory();
     let call = call();

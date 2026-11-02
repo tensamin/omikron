@@ -37,6 +37,7 @@ use crate::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let stop_signal = shutdown_signal()?;
     if default_provider().install_default().is_err() {
         return Err("Error loading Provider".into());
     }
@@ -144,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::pin!(server);
     let stopped = tokio::select! {
         result = &mut server => Some(result),
-        result = tokio::signal::ctrl_c() => {
+        result = stop_signal => {
             result.map_err(|error| format!("Unable to wait for shutdown signal: {error}"))?;
             None
         }
@@ -211,6 +212,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = std::io::Result<()>>> {
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    Ok(async move {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                result = tokio::signal::ctrl_c() => result,
+                _ = terminate.recv() => Ok(()),
+            }
+        }
+        #[cfg(not(unix))]
+        tokio::signal::ctrl_c().await
+    })
+}
+
 fn keyring_for_omega(keyring: &Keyring) -> Result<Keyring, String> {
     let bytes = keyring.try_to_bytes().map_err(|error| error.to_string())?;
     Keyring::from_bytes(&bytes).map_err(|error| error.to_string())
@@ -251,6 +268,47 @@ fn omega_database_blob_literal(public_key: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_uses_shutdown_path() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        if std::env::var_os("TENSAMIN_SHUTDOWN_TEST_CHILD").is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let signal = shutdown_signal().unwrap();
+                println!("shutdown handler ready");
+                tokio::time::timeout(std::time::Duration::from_secs(5), signal)
+                    .await
+                    .expect("SIGTERM was not observed")
+                    .unwrap();
+            });
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::sigterm_uses_shutdown_path",
+                "--nocapture",
+            ])
+            .env("TENSAMIN_SHUTDOWN_TEST_CHILD", "1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+        let ready = output
+            .by_ref()
+            .any(|line| line.unwrap() == "shutdown handler ready");
+        assert!(ready, "child did not register its shutdown handler");
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(child.wait().unwrap().success());
+    }
 
     #[test]
     fn public_key_blob_literal_is_valid_mysql_hex_syntax() {
