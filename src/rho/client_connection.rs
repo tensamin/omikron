@@ -25,6 +25,21 @@ use uuid::Uuid;
 
 static NEXT_POLICY_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
+fn is_password_receipt_query(frame: &CommunicationValue) -> bool {
+    frame.is_type(CommunicationType::PasswordEnrollmentStatus)
+        && frame
+            .get_data(DataType::SecurePayload)
+            .and_then(DataValue::as_bytes)
+            .is_some_and(|bytes| !bytes.is_empty() && bytes.len() <= 512 * 1024)
+        && frame
+            .get_data(DataType::Version)
+            .and_then(DataValue::as_str)
+            .is_some_and(|text| {
+                mtp::type_map::Version::parse(text)
+                    .is_some_and(|version| version.to_string() == text)
+            })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceClass {
     Desktop,
@@ -675,7 +690,7 @@ impl ClientConnection {
                     return;
                 };
                 if cv.receiver() != Some(rho.get_iota_id().await)
-                    || cv.payload().as_encrypted().is_none()
+                    || (cv.payload().as_encrypted().is_none() && !is_password_receipt_query(&cv))
                 {
                     self.send_error_response(message_id, CommunicationType::ErrorInvalidData)
                         .await;
