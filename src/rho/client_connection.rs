@@ -522,6 +522,13 @@ impl ClientConnection {
                     return;
                 }
                 let mut request = authenticated_peer_control_request(&cv, self.user_id);
+                if request.is_type(CommunicationType::GetChats) {
+                    request.remove_data(DataType::SessionId);
+                    request = request.add_typed_default(
+                        DataType::SessionId,
+                        DataValue::UnsignedNumber(self.session_id.into()),
+                    );
+                }
                 if relay_router::is_relay_receipt_page(&request) {
                     request.remove_data(DataType::SessionId);
                     request = request.add_typed_default(
@@ -529,7 +536,20 @@ impl ClientConnection {
                         DataValue::UnsignedNumber(self.session_id.into()),
                     );
                 }
-                match rho.await_peer_control(&request).await {
+                let response = async {
+                    let response = rho.await_peer_control(&request).await?;
+                    if request.is_type(CommunicationType::GetChats)
+                        && response.is_type(CommunicationType::GetChats)
+                    {
+                        rho.get_iota_connection()
+                            .enrich_chat_snapshot(response, self.user_id, self.session_id as i64)
+                            .await
+                    } else {
+                        Ok(response)
+                    }
+                }
+                .await;
+                match response {
                     Ok(response) => {
                         // Assignment publication needs this write lock. Keep the
                         // authorization check valid through account-data delivery.

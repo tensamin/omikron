@@ -75,22 +75,13 @@ impl IotaConnection {
             );
             return;
         };
-
-        // Authority check: user must be linked to this Iota
         if !i64::try_from(user_id)
             .ok()
             .is_some_and(|user| self.state.rho.owns_iota_user(user, self))
         {
-            log_err!(
-                self.iota_id as i64,
-                PrintType::Iota,
-                "Rejected get_chats: sender_id={} is not authorized for this iota.",
-                user_id
-            );
             return;
         }
 
-        let mut interested_ids: Vec<i64> = Vec::new();
         let Some(session_id) = cv
             .get_data(DataType::SessionId)
             .as_signed_number()
@@ -105,10 +96,8 @@ impl IotaConnection {
             .await;
             return;
         };
+        let mut interested_ids = Vec::new();
         let tm = TypeMap::latest();
-
-        // Presence interest is the complete contact set, independent of
-        // whether this account currently participates in a call.
         if let Some(DataValue::Array(users)) = cv.get_data(DataType::UserIds) {
             for user in users {
                 match user {
@@ -128,11 +117,53 @@ impl IotaConnection {
             interested_ids.sort_unstable();
             interested_ids.dedup();
         }
+        if let Err(error) = self
+            .replace_state_subscription(user_id as i64, session_id, interested_ids)
+            .await
+        {
+            log_err!(
+                self.iota_id as i64,
+                PrintType::Omega,
+                "Failed to replace presence subscription for user {} session {}: {}",
+                user_id,
+                session_id,
+                error
+            );
+        }
+        let response = match self.enrich_chat_snapshot(cv, user_id, session_id).await {
+            Ok(response) => response,
+            Err(_) => CommunicationValue::new(CommunicationType::ErrorInternal)
+                .with_id(message_id)
+                .with_receiver(user_id),
+        };
+        self.forward_to_client(response).await;
+    }
+
+    pub(crate) async fn enrich_chat_snapshot(
+        &self,
+        cv: CommunicationValue,
+        user_id: u64,
+        session_id: i64,
+    ) -> Result<CommunicationValue, String> {
+        if !i64::try_from(user_id)
+            .ok()
+            .filter(|user| *user > 0)
+            .is_some_and(|user| self.state.rho.owns_iota_user(user, self))
+            || session_id <= 0
+        {
+            return Err("chat snapshot has no current account route".into());
+        }
+        let tm = TypeMap::latest();
 
         // ============================
         // Load Calls
         // ============================
-        let calls: Vec<Arc<CallGroup>> = self.state.call_manager.get_call_groups(user_id).await;
+        let calls: Vec<Arc<CallGroup>> = self
+            .state
+            .call_manager
+            .get_call_groups(user_id)
+            .await
+            .map_err(|_| "call state is unavailable")?;
 
         let mut invites: HashMap<i64, Vec<DataValue>> = HashMap::new();
         let mut global_calls: Vec<DataValue> = Vec::new();
@@ -175,9 +206,14 @@ impl IotaConnection {
                 }
                 None => Err("Iota unavailable".into()),
             }
-            .ok()
-            .filter(|response| response.is_type(CommunicationType::CallEnvelopeGet))
-            .and_then(|response| response.get_data(DataType::CallSecret).cloned());
+            .map_err(|_| "call envelope is unavailable")?;
+            if !secret.is_type(CommunicationType::CallEnvelopeGet) {
+                return Err("call envelope request was rejected".into());
+            }
+            let secret = secret.get_data(DataType::CallSecret).cloned();
+            if secret.is_none() {
+                return Err("call envelope response is incomplete".into());
+            }
             if let Some(secret) = secret {
                 let timeout = call_self
                     .as_ref()
@@ -293,30 +329,11 @@ impl IotaConnection {
         };
 
         // ============================
-        // Notify Omega
-        // ============================
-        if let Err(error) = self
-            .replace_state_subscription(user_id as i64, session_id, interested_ids.clone())
-            .await
-        {
-            log_err!(
-                self.iota_id as i64,
-                PrintType::Omega,
-                "Failed to replace presence subscription for user {} session {}: {}",
-                user_id,
-                session_id,
-                error
-            );
-        }
-
-        // ============================
         // Forward to client
         // ============================
-        self.forward_to_client(
-            cv.add_typed_default(DataType::UserIds, enriched_contacts)
-                .add_typed_default(DataType::Calls, DataValue::Array(global_calls)),
-        )
-        .await;
+        Ok(cv
+            .add_typed_default(DataType::UserIds, enriched_contacts)
+            .add_typed_default(DataType::Calls, DataValue::Array(global_calls)))
     }
 
     /// Forward message to client

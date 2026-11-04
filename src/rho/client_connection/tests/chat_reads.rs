@@ -33,9 +33,14 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
         assert!(rho.owns_client(&client));
         assert!(client.get_rho_connection().await.is_some());
 
-        for (index, kind) in [C::UserResolve, C::GetChats, C::GetChatSecret]
-            .into_iter()
-            .enumerate()
+        for (index, kind) in [
+            C::UserResolve,
+            C::GetChats,
+            C::GetCommunities,
+            C::GetChatSecret,
+        ]
+        .into_iter()
+        .enumerate()
         {
             let id = 100 + index as u32;
             let request = Frame::new(kind).with_id(id).with_sender(999);
@@ -90,9 +95,14 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        for (index, kind) in [C::UserResolve, C::GetChats, C::GetChatSecret]
-            .into_iter()
-            .enumerate()
+        for (index, kind) in [
+            C::UserResolve,
+            C::GetChats,
+            C::GetCommunities,
+            C::GetChatSecret,
+        ]
+        .into_iter()
+        .enumerate()
         {
             let id = 300 + index as u32;
             let request = match kind {
@@ -102,7 +112,9 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
                 C::GetChatSecret => secret_request
                     .to_frame(&mtp::codec::TypeMap::latest(), id)
                     .unwrap(),
-                _ => Frame::new(kind).with_id(id),
+                _ => Frame::new(kind)
+                    .with_id(id)
+                    .add_typed_default(D::SessionId, V::UnsignedNumber(999)),
             }
             .with_sender(999);
             client_peer.sender.send(&request).await.unwrap();
@@ -112,6 +124,12 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
                 .await;
             let forwarded = iota_peer.receive().await.unwrap();
             assert_eq!(forwarded.sender(), Some(42));
+            if kind == C::GetChats {
+                assert_eq!(
+                    forwarded.get_data(D::SessionId).and_then(V::as_number),
+                    Some(client.session_id.into())
+                );
+            }
             // A frame with the wrong upstream ID must not consume this waiter.
             iota_peer
                 .sender
@@ -152,6 +170,9 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
                         ),
                     ])]),
                 ),
+                C::GetCommunities => Frame::new(C::GetCommunities)
+                    .with_receiver(42)
+                    .add_typed_default(D::Communities, V::Array(vec![])),
                 _ => tau::chat_secret::ReadResponse {
                     scope: secret_request.clone(),
                     encrypted_secret: vec![1, 2, 3],
@@ -167,7 +188,14 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
             iota_peer.sender.send(&response).await.unwrap();
             let received = client_peer.receive().await.unwrap();
             assert_eq!(received.id(), Some(id));
-            assert_eq!(received.payload(), response.payload());
+            let expected = if kind == C::GetChats {
+                response
+                    .clone()
+                    .add_typed_default(D::Calls, V::Array(vec![]))
+            } else {
+                response.clone()
+            };
+            assert_eq!(received.payload(), expected.payload());
             if kind == C::GetChatSecret {
                 let decoded =
                     tau::chat_secret::ReadResponse::from_frame(&received, &request.with_sender(42))
