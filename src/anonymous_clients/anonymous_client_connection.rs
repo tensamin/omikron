@@ -799,7 +799,6 @@ impl AnonymousClientConnection {
 
     pub async fn handle_close(&self) {
         *self.is_open.write().await = false;
-        self.state.call_manager.get_call_groups(self.user_id).await;
         anonymous_manager::remove_anonymous_user(self.user_id).await;
     }
 }

@@ -105,6 +105,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn call_listing_does_not_turn_a_repository_failure_into_an_empty_snapshot() {
+        let (mut manager, _) = manager_with_call().await;
+        let directory = std::env::temp_dir().join(format!("tensamin-call-list-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("calls.sqlite");
+        manager.repository = Some(Arc::new(SqliteCallRepository::open(&path).unwrap()));
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection.execute("DROP TABLE managed_calls", []).unwrap();
+        }
+        assert!(manager.get_call_groups(1).await.is_err());
+        drop(manager);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn stale_admin_projection_cannot_authorize_a_moderation_write() {
         let (manager, id) = manager_with_call().await;
         let projection = manager.get_call(id).await.unwrap();
@@ -824,24 +840,34 @@ impl CallManager {
         #[cfg(not(test))]
         None
     }
-    pub async fn get_call_groups(&self, user: u64) -> Vec<Arc<CallGroup>> {
+    pub async fn get_call_groups(
+        &self,
+        user: u64,
+    ) -> Result<Vec<Arc<CallGroup>>, CallServiceError> {
         let ids = if let Some(repository) = &self.repository {
-            match repository.list().await {
-                Ok(calls) => calls.into_iter().map(|c| c.id.id).collect::<Vec<_>>(),
-                Err(_) => return Vec::new(),
-            }
+            repository
+                .list()
+                .await?
+                .into_iter()
+                .map(|c| c.id.id)
+                .collect::<Vec<_>>()
         } else {
             self.groups.iter().map(|g| *g.key()).collect()
         };
         let mut groups = Vec::new();
         for id in ids {
-            if let Some(group) = self.get_call(id).await
+            let group = if self.repository.is_some() {
+                self.refresh(id).await?
+            } else {
+                self.get_call(id).await
+            };
+            if let Some(group) = group
                 && group.is_related(user).await
             {
                 groups.push(group);
             }
         }
-        groups
+        Ok(groups)
     }
     pub fn should_forward_invite(&self, from: u64, to: u64) -> bool {
         from != to

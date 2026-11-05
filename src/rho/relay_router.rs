@@ -53,6 +53,7 @@ pub fn message_security_class(frame: &CommunicationValue) -> MessageSecurityClas
     const PEER_CONTROL_TYPES: &[CommunicationType] = &[
         CommunicationType::UserResolve,
         CommunicationType::GetChats,
+        CommunicationType::GetCommunities,
         CommunicationType::GetChatSecret,
         CommunicationType::MessageGet,
         CommunicationType::MessagesGet,

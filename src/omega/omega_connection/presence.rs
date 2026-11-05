@@ -1,3 +1,4 @@
+use super::presence_projection::ContactPresence;
 use super::*;
 
 pub(super) fn normalize_presence_user_ids(mut user_ids: Vec<i64>) -> Result<Vec<i64>, String> {
@@ -23,9 +24,16 @@ impl OmegaConnection {
         let user_ids = normalize_presence_user_ids(user_ids)?;
 
         let key = (user_id, session_id);
+        if self
+            .session_presence
+            .get(&key)
+            .is_some_and(|entry| entry.projection.is_some())
+        {
+            return Ok(());
+        }
         // Store the latest authoritative snapshot before checking readiness.
         // A client can synchronize while the transport is reconnecting.
-        let generation = self.replace_desired_presence_state(key, user_ids.clone());
+        let generation = self.replace_desired_presence_state(key, user_ids.clone(), None);
 
         if !self.is_ready().await {
             return Err("Omega is not synchronized".to_string());
@@ -33,13 +41,44 @@ impl OmegaConnection {
 
         self.deliver_state_subscription(key, user_ids, generation)
             .await
+            .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn replace_contact_subscription(
+        &self,
+        user_id: i64,
+        session_id: i64,
+        contacts: &CommunicationValue,
+        authority: &str,
+    ) -> Result<CommunicationValue, String> {
+        if user_id <= 0 || session_id <= 0 {
+            return Err("invalid presence session".into());
+        }
+        let projection = ContactPresence::from_contacts(contacts, authority)
+            .map_err(|error| error.to_string())?;
+        let user_ids = projection.user_ids();
+        let key = (user_id, session_id);
+        let generation =
+            self.replace_desired_presence_state(key, user_ids.clone(), Some(projection));
+        if !self.is_ready().await {
+            return Err("Omega is not synchronized".into());
+        }
+        let snapshot = self
+            .deliver_state_subscription(key, user_ids, generation)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !self.is_current_presence_generation(key, generation) {
+            return Err("presence subscription was replaced".into());
+        }
+        snapshot.ok_or_else(|| "presence subscription was replaced".into())
     }
 
     pub(super) fn replace_desired_presence_state(
         &self,
         key: (i64, i64),
         user_ids: Vec<i64>,
+        projection: Option<ContactPresence>,
     ) -> u64 {
         self.session_presence
             .entry(key)
@@ -47,11 +86,13 @@ impl OmegaConnection {
                 entry.subscribed_user_ids = user_ids.clone();
                 entry.pending = true;
                 entry.generation = entry.generation.saturating_add(1);
+                entry.projection = projection.clone();
             })
             .or_insert_with(|| SessionPresenceState {
                 subscribed_user_ids: user_ids,
                 pending: true,
                 generation: 1,
+                projection,
             })
             .generation
     }
@@ -62,8 +103,80 @@ impl OmegaConnection {
         session_id: i64,
         event: &CommunicationValue,
     ) {
-        if let Some(client) = self.rho.get_client_connection(user_id, session_id).await {
-            client.send_message(event).await;
+        let event = {
+            let Some(mut entry) = self.session_presence.get_mut(&(user_id, session_id)) else {
+                return;
+            };
+            let pending = entry.pending;
+            let generation = entry.generation;
+            match entry.projection.as_mut() {
+                Some(projection) => match projection.event(event, pending) {
+                    Ok(event) => event.map(|event| {
+                        event
+                            .add_typed_default(
+                                DataType::Uuid,
+                                DataValue::Str(self.connection_id.to_string()),
+                            )
+                            .add_typed_default(
+                                DataType::Timestamp,
+                                DataValue::UnsignedNumber(generation.into()),
+                            )
+                    }),
+                    Err(error) => {
+                        log_err!(
+                            user_id,
+                            PrintType::Omega,
+                            "Rejected presence update: {}",
+                            error
+                        );
+                        return;
+                    }
+                },
+                None => Some(event.clone()),
+            }
+        };
+        if let Some(event) = event
+            && let Some(client) = self.rho.get_client_connection(user_id, session_id).await
+        {
+            client.send_message(&event).await;
+        }
+    }
+
+    pub(super) async fn publish_presence_unavailable(&self) {
+        let mut snapshots = Vec::new();
+        for mut entry in self.session_presence.iter_mut() {
+            let Some(generation) = entry.generation.checked_add(1) else {
+                continue;
+            };
+            let Some(projection) = entry.projection.as_mut() else {
+                continue;
+            };
+            let missing = projection.suspend();
+            entry.generation = generation;
+            entry.pending = true;
+            let (user, session) = *entry.key();
+            let snapshot = CommunicationValue::new(CommunicationType::GetStates)
+                .with_receiver(user as u64)
+                .add_typed_default(DataType::SessionId, DataValue::SignedNumber(session.into()))
+                .add_typed_default(
+                    DataType::Uuid,
+                    DataValue::Str(self.connection_id.to_string()),
+                )
+                .add_typed_default(
+                    DataType::Timestamp,
+                    DataValue::UnsignedNumber(generation.into()),
+                )
+                .add_typed_default(DataType::VersionNumber, DataValue::UnsignedNumber(1))
+                .add_typed_default(DataType::UserStates, DataValue::Array(vec![]))
+                .add_typed_default(DataType::MissingUserIds, DataValue::Array(missing));
+            snapshots.push(((user, session), generation, snapshot));
+        }
+        for ((user, session), generation, snapshot) in snapshots {
+            if self.is_current_presence_generation((user, session), generation)
+                && let Some(client) = self.rho.get_client_connection(user, session).await
+            {
+                client.send_message(&snapshot).await;
+            }
         }
     }
 
@@ -72,7 +185,7 @@ impl OmegaConnection {
         key: (i64, i64),
         user_ids: Vec<i64>,
         generation: u64,
-    ) -> Result<(), InitialPresenceError> {
+    ) -> Result<Option<CommunicationValue>, InitialPresenceError> {
         let (user_id, session_id) = key;
         let delivery_lock = self
             .presence_delivery_locks
@@ -84,7 +197,7 @@ impl OmegaConnection {
         // Replacements can be requested concurrently.  Serializing transport
         // side effects ensures that the current generation is installed last.
         if !self.is_current_presence_generation(key, generation) {
-            return Ok(());
+            return Ok(None);
         }
 
         if !self.peer_capabilities.read().await.state_subscribe_v1 {
@@ -94,7 +207,7 @@ impl OmegaConnection {
             if result.is_ok() {
                 self.mark_presence_delivered(key, generation).await;
             }
-            return result;
+            return result.map(Some);
         }
 
         let subscription = CommunicationValue::new(CommunicationType::StateSubscribe)
@@ -130,10 +243,11 @@ impl OmegaConnection {
             )));
         }
 
-        self.request_user_states(user_id, session_id, user_ids, generation)
+        let snapshot = self
+            .request_user_states(user_id, session_id, user_ids, generation)
             .await?;
         self.mark_presence_delivered(key, generation).await;
-        Ok(())
+        Ok(Some(snapshot))
     }
 
     pub(super) async fn restore_presence_subscriptions(&self) -> Result<(), String> {
@@ -156,6 +270,10 @@ impl OmegaConnection {
         // delivered successfully on the previous transport.
         for mut entry in self.session_presence.iter_mut() {
             entry.pending = true;
+            entry.generation = entry
+                .generation
+                .checked_add(1)
+                .ok_or("presence generation exhausted")?;
         }
 
         loop {
@@ -270,10 +388,33 @@ impl OmegaConnection {
         session_id: i64,
         user_ids: Vec<i64>,
         generation: u64,
-    ) -> Result<(), InitialPresenceError> {
-        let response = self
+    ) -> Result<CommunicationValue, InitialPresenceError> {
+        let mut response = self
             .fetch_user_states_snapshot(user_id, session_id, &user_ids)
             .await?;
+
+        {
+            let mut entry = self
+                .session_presence
+                .get_mut(&(user_id, session_id))
+                .ok_or_else(|| {
+                    InitialPresenceError::InvalidSnapshot("presence session ended".into())
+                })?;
+            if entry.generation == generation
+                && let Some(projection) = entry.projection.as_mut()
+            {
+                response = projection.snapshot(&response)?;
+                response = response
+                    .add_typed_default(
+                        DataType::Uuid,
+                        DataValue::Str(self.connection_id.to_string()),
+                    )
+                    .add_typed_default(
+                        DataType::Timestamp,
+                        DataValue::UnsignedNumber(generation.into()),
+                    );
+            }
+        }
 
         if self.is_current_presence_generation((user_id, session_id), generation)
             && let Some(client) = self.rho.get_client_connection(user_id, session_id).await
@@ -287,12 +428,133 @@ impl OmegaConnection {
                 session_id
             );
         }
-        Ok(())
+        Ok(response)
     }
 
     pub(super) fn is_current_presence_generation(&self, key: (i64, i64), generation: u64) -> bool {
         self.session_presence
             .get(&key)
             .is_some_and(|entry| entry.generation == generation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn canonical_subscription_queries_real_ids_and_merges_an_early_live_update() {
+        let state = crate::rho::test_support::state();
+        let omega = state.omega.clone();
+        *omega.state.write().await = ConnectionState::Ready;
+        omega.peer_capabilities.write().await.state_subscribe_v1 = true;
+        let mut requests = omega.test_requests();
+        let map = mtp::codec::TypeMap::latest();
+        let contacts = CommunicationValue::new(CommunicationType::GetChats).add_typed_default(
+            DataType::UserIds,
+            DataValue::Array(vec![DataValue::Container(vec![
+                (
+                    data_type_id(DataType::UserId, &map),
+                    DataValue::SignedNumber(7),
+                ),
+                (
+                    data_type_id(DataType::Principal, &map),
+                    DataValue::Str(format!(
+                        "{{\"authority\":\"omega-key:{}\",\"user_id\":42}}",
+                        "1".repeat(64)
+                    )),
+                ),
+            ])]),
+        );
+        let request_task = tokio::spawn({
+            let omega = omega.clone();
+            async move {
+                omega
+                    .replace_contact_subscription(
+                        5,
+                        9,
+                        &contacts,
+                        &format!("omega-key:{}", "1".repeat(64)),
+                    )
+                    .await
+            }
+        });
+        let (subscribe, reply) = requests.recv().await.unwrap();
+        assert!(subscribe.is_type(CommunicationType::StateSubscribe));
+        assert_eq!(subscribe.sender(), Some(5));
+        assert_eq!(
+            subscribe.get_data(DataType::UserIds),
+            Some(&DataValue::Array(vec![DataValue::SignedNumber(42)]))
+        );
+        reply
+            .send(Ok(CommunicationValue::new(CommunicationType::Success)))
+            .unwrap();
+        let (get, reply) = requests.recv().await.unwrap();
+        assert!(get.is_type(CommunicationType::GetStates));
+        assert_eq!(
+            get.get_data(DataType::UserIds),
+            subscribe.get_data(DataType::UserIds)
+        );
+        let epoch = Uuid::new_v4();
+        let early = CommunicationValue::new(CommunicationType::ClientChanged)
+            .add_typed_default(DataType::UserId, DataValue::SignedNumber(42))
+            .add_typed_default(DataType::UserState, DataValue::Str("user_dnd".into()))
+            .add_typed_default(DataType::Uuid, DataValue::Str(epoch.to_string()))
+            .add_typed_default(DataType::VersionNumber, DataValue::UnsignedNumber(4));
+        omega.forward_client_changed(5, 9, &early).await;
+        reply
+            .send(Ok(CommunicationValue::new(CommunicationType::GetStates)
+                .add_typed_default(DataType::SessionId, DataValue::SignedNumber(9))
+                .add_typed_default(DataType::Uuid, DataValue::Str(epoch.to_string()))
+                .add_typed_default(DataType::VersionNumber, DataValue::UnsignedNumber(1))
+                .add_typed_default(DataType::MissingUserIds, DataValue::Array(vec![]))
+                .add_typed_default(
+                    DataType::UserStates,
+                    DataValue::Array(vec![DataValue::Container(vec![
+                        (
+                            data_type_id(DataType::UserId, &map),
+                            DataValue::SignedNumber(42),
+                        ),
+                        (
+                            data_type_id(DataType::UserState, &map),
+                            DataValue::Str("user_online".into()),
+                        ),
+                        (
+                            data_type_id(DataType::VersionNumber, &map),
+                            DataValue::UnsignedNumber(3),
+                        ),
+                    ])]),
+                )))
+            .unwrap();
+        let snapshot = request_task.await.unwrap().unwrap();
+        assert_eq!(
+            snapshot.get_data(DataType::Uuid),
+            Some(&DataValue::Str(omega.connection_id.to_string()))
+        );
+        assert_eq!(
+            snapshot.get_data(DataType::Timestamp),
+            Some(&DataValue::UnsignedNumber(1))
+        );
+        let Some(DataValue::Array(states)) = snapshot.get_data(DataType::UserStates) else {
+            panic!("states")
+        };
+        assert_eq!(
+            states[0].get_field(data_type_id(DataType::UserId, &map)),
+            Some(&DataValue::SignedNumber(7))
+        );
+        assert_eq!(
+            states[0].get_field(data_type_id(DataType::UserState, &map)),
+            Some(&DataValue::Str("user_dnd".into()))
+        );
+        assert_eq!(
+            states[0].get_field(data_type_id(DataType::VersionNumber, &map)),
+            Some(&DataValue::UnsignedNumber(4))
+        );
+        assert!(!omega.session_presence.get(&(5, 9)).unwrap().pending);
+        omega.publish_presence_unavailable().await;
+        let entry = omega.session_presence.get(&(5, 9)).unwrap();
+        assert!(entry.pending);
+        assert_eq!(entry.generation, 2);
+        assert_eq!(entry.projection.as_ref().unwrap().user_ids(), vec![42]);
     }
 }
