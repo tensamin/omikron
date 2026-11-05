@@ -192,6 +192,7 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
                 response
                     .clone()
                     .add_typed_default(D::Calls, V::Array(vec![]))
+                    .add_typed_default(D::PresenceSnapshotComplete, V::Bool(false))
             } else {
                 response.clone()
             };

@@ -519,5 +519,7 @@ impl OmegaConnection {
                 }
             }
         }
+        *self.state.write().await = ConnectionState::Disconnected;
+        self.publish_presence_unavailable().await;
     }
 }

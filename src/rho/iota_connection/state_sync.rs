@@ -331,9 +331,52 @@ impl IotaConnection {
         // ============================
         // Forward to client
         // ============================
-        Ok(cv
+        let mut response = cv
             .add_typed_default(DataType::UserIds, enriched_contacts)
-            .add_typed_default(DataType::Calls, DataValue::Array(global_calls)))
+            .add_typed_default(DataType::Calls, DataValue::Array(global_calls))
+            .add_typed_default(DataType::PresenceSnapshotComplete, DataValue::Bool(false));
+        if let Ok(principal) = self.state.call_manager.principal(user_id) {
+            match self
+                .state
+                .omega
+                .replace_contact_subscription(
+                    user_id as i64,
+                    session_id,
+                    &response,
+                    principal.authority.as_str(),
+                )
+                .await
+            {
+                Ok(snapshot) => {
+                    for field in [
+                        DataType::UserStates,
+                        DataType::MissingUserIds,
+                        DataType::Uuid,
+                        DataType::Timestamp,
+                        DataType::VersionNumber,
+                    ] {
+                        let value = snapshot
+                            .get_data(field)
+                            .cloned()
+                            .ok_or("incomplete presence snapshot")?;
+                        response = response.add_typed_default(field, value);
+                    }
+                    response = response.add_typed_default(
+                        DataType::PresenceSnapshotComplete,
+                        DataValue::Bool(true),
+                    );
+                }
+                Err(error) => {
+                    log_err!(
+                        user_id as i64,
+                        PrintType::Omega,
+                        "Canonical presence is unavailable: {}",
+                        error
+                    );
+                }
+            }
+        }
+        Ok(response)
     }
 
     /// Forward message to client
