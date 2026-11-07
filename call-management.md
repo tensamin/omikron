@@ -5,26 +5,18 @@ state machine; SQLite stores the aggregate and transactional operation, audit,
 event, and outbox records. LiveKit and Iota requests run after commit. Legacy
 `CallGroup` values are read projections, not permission authorities.
 
-## Identity and migration
+## Identity and storage
 
 Account principals use `omega-key:<SHA-256 of serialized Omega public-key bundle>`.
 Startup reads the authenticated transport's pinned `./omega.mpkb`. The hosting
 call authority uses the equivalent `omikron-key:` fingerprint of Omikron's enrolled
 public-key bundle. Numeric Omikron IDs remain legacy routing and metadata fields.
 Changing either pinned authority while retaining a managed call database stops
-startup for explicit migration. It cannot replay stale legacy rows under a new
-namespace and restore revoked privileges.
+startup. Stored calls are never remapped to a different authority.
 
-Numbered SQLite migrations run transactionally in `CALL_DB_PATH`. Existing
-members, timeouts, invitations, and unexpired reservations are imported without
-overwriting already-managed state. Source tables remain available for inspection;
-production code no longer writes policy to them.
-
-The creator becomes owner only if they still have the legacy administrator role.
-Otherwise a sole existing legacy administrator becomes owner. Missing or ambiguous
-administrators stop migration of that record. This avoids restoring privileges to
-a demoted creator or electing an arbitrary attendee. Imports have an immutable
-host audit entry. An owner leaving does not choose a successor.
+`CALL_DB_PATH` supports fresh databases only. Startup creates the current schema
+directly, without numbered migrations or imports from older call tables.
+An owner leaving does not choose a successor.
 Guest admission capabilities do not grant administrative sessions, so guest
 identities cannot receive owner or moderator roles.
 
