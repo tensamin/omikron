@@ -119,10 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine.clone(),
             owner_authority,
             principal_authority,
-        )
-        .with_persistence(std::sync::Arc::new(
-            crate::calls::persistence::CallPersistence::open(std::path::Path::new(&call_db_path))?,
-        )),
+        ),
     );
     call_manager.restore().await?;
     let (shutdown, _) = watch::channel(false);

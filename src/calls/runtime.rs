@@ -448,6 +448,10 @@ pub fn start_effect_worker(
                 completed = workers.join_next() => {
                     if *shutdown.borrow() { break; }
                     crate::log_err!(0, crate::util::logger::PrintType::Call, "Call effect worker stopped unexpectedly: {completed:?}");
+                    tokio::select! {
+                        _ = shutdown.changed() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
                     workers.spawn(run_effect_worker(engine.clone(), shutdown.clone()));
                 }
                 _ = interval.tick() => {

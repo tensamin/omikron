@@ -207,6 +207,9 @@ impl IotaConnection {
                 None => Err("Iota unavailable".into()),
             }
             .map_err(|_| "call envelope is unavailable")?;
+            if secret.is_type(CommunicationType::ErrorNotFound) {
+                continue;
+            }
             if !secret.is_type(CommunicationType::CallEnvelopeGet) {
                 return Err("call envelope request was rejected".into());
             }

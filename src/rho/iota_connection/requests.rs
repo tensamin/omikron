@@ -307,6 +307,7 @@ fn validate_chat_read_response(
         Some(
             CommunicationType::UserResolve
                 | CommunicationType::GetChats
+                | CommunicationType::GetCommunities
                 | CommunicationType::GetChatSecret
         )
     ) {
@@ -335,6 +336,36 @@ fn validate_chat_read_response(
         return Ok(());
     }
     match request.get_comm_type_enum() {
+        Some(CommunicationType::GetCommunities) => {
+            if !response.is_type(CommunicationType::GetCommunities)
+                || response.receiver() != request.sender()
+            {
+                return Err(invalid());
+            }
+            let Some(DataValue::Array(communities)) = response.get_data(DataType::Communities)
+            else {
+                return Err(invalid());
+            };
+            let map = response.type_map().ok_or_else(invalid)?;
+            for community in communities {
+                let DataValue::Container(fields) = community else {
+                    return Err(invalid());
+                };
+                for kind in [
+                    DataType::CommunityAddress,
+                    DataType::CommunityTitle,
+                    DataType::Position,
+                ] {
+                    let kind = kind.try_to_id(map).ok_or_else(invalid)?;
+                    let mut values = fields.iter().filter(|(field, _)| *field == kind);
+                    if !matches!(values.next(), Some((_, DataValue::Str(_))))
+                        || values.next().is_some()
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
         Some(CommunicationType::GetChatSecret) => {
             tau::chat_secret::ReadResponse::from_frame(response, request).map_err(|_| invalid())?;
         }
