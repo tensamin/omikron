@@ -14,8 +14,11 @@ public-key bundle. Numeric Omikron IDs remain legacy routing and metadata fields
 Changing either pinned authority while retaining a managed call database stops
 startup. Stored calls are never remapped to a different authority.
 
-`CALL_DB_PATH` supports fresh databases only. Startup creates the current schema
-directly, without numbered migrations or imports from older call tables.
+Use a fresh database at `CALL_DB_PATH` for initial deployment, then retain and
+reuse that file across restarts to restore calls and pending effects. Startup
+creates the current schema and format marker atomically. Unsupported existing
+files fail before schema or journal writes. There are no numbered migrations or
+imports from older call tables.
 An owner leaving does not choose a successor.
 Guest admission capabilities do not grant administrative sessions, so guest
 identities cannot receive owner or moderator roles.

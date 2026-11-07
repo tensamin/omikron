@@ -31,6 +31,7 @@ pub struct CallOutboxHealth {
     pub pending_key_envelopes: u64,
 }
 
+const STORAGE_FORMAT: i64 = 0x4F4D4331; // "OMC1", the directly created call layout.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS managed_calls (
  authority TEXT NOT NULL, call_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision >= 0),
@@ -127,6 +128,16 @@ impl SqliteCallRepository {
         let max_pending_key_epochs = setting("CALL_MAX_PENDING_KEY_EPOCHS", 4)?;
         let max_calls_per_principal = setting("CALL_MAX_CALLS_PER_USER", 16)?;
         let mut db = Connection::open(path).map_err(storage)?;
+        let format: i64 = db
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .map_err(storage)?;
+        let has_schema: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",
+            [], |row| row.get(0),
+        ).map_err(storage)?;
+        if format != STORAGE_FORMAT && (format != 0 || has_schema) {
+            return Err(CallError::StorageUnavailable);
+        }
         db.busy_timeout(Duration::from_secs(5)).map_err(storage)?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
@@ -136,6 +147,8 @@ impl SqliteCallRepository {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         tx.execute_batch(SCHEMA).map_err(storage)?;
+        tx.pragma_update(None, "application_id", STORAGE_FORMAT)
+            .map_err(storage)?;
         tx.commit().map_err(storage)?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
