@@ -20,6 +20,7 @@ impl IotaConnection {
                 CommunicationType::RelayReceiptPage
                     | CommunicationType::UserResolve
                     | CommunicationType::GetChats
+                    | CommunicationType::GetCommunities
                     | CommunicationType::AccountStateRequest
                     | CommunicationType::GetChatSecret
                     | CommunicationType::MessageGet
@@ -396,6 +397,54 @@ fn validate_chat_read_response(
             {
                 return Err(invalid());
             }
+            if let Some(DataValue::Str(json)) = request.get_data(DataType::Json)
+                && let Some(key_id) = json
+                    .strip_prefix("{\"file_signing_key\":\"")
+                    .and_then(|value| value.strip_suffix("\"}"))
+            {
+                if key_id.len() != 64
+                    || !key_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(invalid());
+                }
+                let proof_json = response
+                    .get_data(DataType::Json)
+                    .as_str()
+                    .ok_or_else(invalid)?;
+                if proof_json.len() > 256 * 1024 {
+                    return Err(invalid());
+                }
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct FileKeyProof {
+                    version: u8,
+                    principal: tau::relay_protocol::Principal,
+                    authority_kind: String,
+                    key_id: String,
+                    public_key: String,
+                    authority_public_key: String,
+                    authority_signature: String,
+                }
+                let proof: FileKeyProof =
+                    serde_json::from_str(proof_json).map_err(|_| invalid())?;
+                if proof.version != 1
+                    || proof.principal != principal
+                    || proof.key_id != key_id
+                    || !matches!(proof.authority_kind.as_str(), "omega" | "iota")
+                    || proof.authority_signature.is_empty()
+                    || mtp::crypto::PublicKeyBundle::from_base64(&proof.public_key).is_err()
+                    || mtp::crypto::PublicKeyBundle::from_base64(&proof.authority_public_key)
+                        .is_err()
+                {
+                    return Err(invalid());
+                }
+                // Historical association evidence deliberately has no active
+                // node/signing-key fields. The Client verifies its authority
+                // signature and purpose before using the historical file key.
+                return Ok(());
+            }
             let node = response
                 .get_data(DataType::NodeId)
                 .as_str()
@@ -421,4 +470,46 @@ fn validate_chat_read_response(
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod file_key_tests {
+    use super::*;
+
+    #[test]
+    fn historical_key_forwarding_is_subject_bound_without_claiming_active_identity() {
+        let public_key = mtp::crypto::Keyring::generate()
+            .public_key_bundle()
+            .try_to_base64()
+            .unwrap();
+        let principal =
+            serde_json::json!({"authority":format!("omega-key:{}", "a".repeat(64)),"user_id":7});
+        let canonical = principal.to_string();
+        let key_id = "b".repeat(64);
+        let request = CommunicationValue::new(CommunicationType::UserResolve)
+            .add_typed_default(DataType::UserAddress, DataValue::Str(canonical.clone()))
+            .add_typed_default(
+                DataType::Json,
+                DataValue::Str(format!("{{\"file_signing_key\":\"{key_id}\"}}")),
+            );
+        let proof = serde_json::json!({"version":1,"principal":principal,"authority_kind":"omega","key_id":key_id,
+            "public_key":public_key,"authority_public_key":public_key,"authority_signature":"detached-signature-verified-by-client"});
+        let response = CommunicationValue::new(CommunicationType::UserResolved)
+            .add_typed_default(DataType::Principal, DataValue::Str(canonical.clone()))
+            .add_typed_default(DataType::UserAddress, DataValue::Str(canonical))
+            .add_typed_default(
+                DataType::AuthorityId,
+                DataValue::Str(format!("omega-key:{}", "a".repeat(64))),
+            )
+            .add_typed_default(DataType::UserId, DataValue::UnsignedNumber(7))
+            .add_typed_default(DataType::Json, DataValue::Str(proof.to_string()));
+        assert!(validate_chat_read_response(&request, &response).is_ok());
+        let active_request = CommunicationValue::new(CommunicationType::UserResolve);
+        assert!(validate_chat_read_response(&active_request, &response).is_err());
+        let mut wrong_subject = proof;
+        wrong_subject["principal"]["user_id"] = 8.into();
+        let wrong =
+            response.add_typed_default(DataType::Json, DataValue::Str(wrong_subject.to_string()));
+        assert!(validate_chat_read_response(&request, &wrong).is_err());
+    }
 }

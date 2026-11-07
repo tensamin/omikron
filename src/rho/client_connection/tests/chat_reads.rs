@@ -205,6 +205,36 @@ async fn authenticated_chat_reads_bind_actor_route_and_response_owner() {
             }
         }
 
+        // An uncertain community read must not prevent an identical retry from
+        // reaching Iota. Correlation IDs are not mutation identities.
+        for id in [190, 191] {
+            client_peer
+                .sender
+                .send(&Frame::new(C::GetCommunities).with_id(id))
+                .await
+                .unwrap();
+            client
+                .clone()
+                .handle_message(general.receiver.receive().await.unwrap())
+                .await;
+            let forwarded = tokio::select! {
+                frame = iota_peer.receive() => frame.unwrap(),
+                frame = client_peer.receive() => panic!("community retry was not forwarded: {frame:?}"),
+            };
+            let response = if id == 190 {
+                Frame::new(C::ErrorInternal)
+            } else {
+                Frame::new(C::GetCommunities)
+                    .with_receiver(42)
+                    .add_typed_default(D::Communities, V::Array(vec![]))
+            }
+            .with_id(forwarded.id().unwrap());
+            iota_peer.sender.send(&response).await.unwrap();
+            let received = client_peer.receive().await.unwrap();
+            assert_eq!(received.id(), Some(id));
+            assert!(received.is_type(if id == 190 { C::ErrorInternal } else { C::GetCommunities }));
+        }
+
         // A valid response type is insufficient to release another account's data.
         let request = Frame::new(C::GetChats).with_id(200);
         client_peer.sender.send(&request).await.unwrap();
