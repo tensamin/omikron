@@ -922,19 +922,27 @@ impl CallRepository for SqliteCallRepository {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(storage)?;
             let mut claims = Vec::new();
             {
-                // Select one eligible effect per call, including within this batch.
-                let mut stmt = tx.prepare("SELECT e.id,e.authority,e.call_id,e.revision,e.effect_json,e.claim_generation,e.attempts
+                // At equal due times, enforcement precedes inspection and notification work.
+                let mut stmt = tx.prepare("WITH effects AS NOT MATERIALIZED (
+                    SELECT e.*, CASE WHEN json_extract(e.effect_json,'$.effect') IN (
+                        'reconcile_member','remove_member','ensure_revoked','mute_microphone_now',
+                        'bound_microphone_mute','revoke_envelopes','revoke_envelopes_through',
+                        'request_key_rotation','end_room','ensure_ended','revoke_links'
+                    ) THEN 0 ELSE 1 END AS priority
                     FROM managed_call_effects e
+                )
+                    SELECT e.id,e.authority,e.call_id,e.revision,e.effect_json,e.claim_generation,e.attempts
+                    FROM effects e
                     WHERE ((e.state='pending' AND e.next_attempt_ms<=?1) OR (e.state='claimed' AND e.claim_until_ms<=?1))
                     AND NOT EXISTS (SELECT 1 FROM managed_call_effects active
                         WHERE active.authority=e.authority AND active.call_id=e.call_id
                         AND active.state='claimed' AND active.claim_until_ms>?1)
-                    AND NOT EXISTS (SELECT 1 FROM managed_call_effects earlier
+                    AND NOT EXISTS (SELECT 1 FROM effects earlier
                         WHERE earlier.authority=e.authority AND earlier.call_id=e.call_id
                         AND ((earlier.state='pending' AND earlier.next_attempt_ms<=?1)
                             OR (earlier.state='claimed' AND earlier.claim_until_ms<=?1))
-                        AND (earlier.next_attempt_ms,earlier.id)<(e.next_attempt_ms,e.id))
-                    ORDER BY e.next_attempt_ms,e.id LIMIT ?2").map_err(storage)?;
+                        AND (earlier.next_attempt_ms,earlier.priority,earlier.id)<(e.next_attempt_ms,e.priority,e.id))
+                    ORDER BY e.next_attempt_ms,e.priority,e.id LIMIT ?2").map_err(storage)?;
                 let rows = stmt.query_map(params![now_ms, limit as i64], |row| Ok((
                     row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, u64>(3)?,
                     row.get::<_, String>(4)?, row.get::<_, u64>(5)?, row.get::<_, u32>(6)?))).map_err(storage)?;
