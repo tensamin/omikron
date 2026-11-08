@@ -1,7 +1,46 @@
-use super::{authenticated_peer_control_request, is_client_omega_operation};
+use super::{
+    authenticated_peer_control_request, is_client_omega_operation, is_password_receipt_query,
+};
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 
 mod chat_reads;
+mod password_receipts;
+
+#[test]
+fn password_receipt_queries_are_bounded_and_cannot_be_used_as_plaintext_mutations() {
+    let query = CommunicationValue::new(CommunicationType::PasswordEnrollmentStatus)
+        .add_typed_default(DataType::SecurePayload, DataValue::Bytes(vec![1]))
+        .add_typed_default(DataType::Version, DataValue::Str("1.1".into()));
+    assert!(is_password_receipt_query(&query));
+    for kind in [
+        CommunicationType::PasswordEnrollmentStart,
+        CommunicationType::PasswordEnrollmentFinish,
+        CommunicationType::PasswordEnrollmentDisable,
+    ] {
+        let mutation = CommunicationValue::new(kind)
+            .add_typed_default(DataType::SecurePayload, DataValue::Bytes(vec![1]))
+            .add_typed_default(DataType::Version, DataValue::Str("1.1".into()));
+        assert!(!is_password_receipt_query(&mutation));
+    }
+    for payload in [
+        DataValue::Bytes(vec![]),
+        DataValue::Bytes(vec![0; 512 * 1024 + 1]),
+        DataValue::Str("not bytes".into()),
+    ] {
+        assert!(!is_password_receipt_query(
+            &CommunicationValue::new(CommunicationType::PasswordEnrollmentStatus)
+                .add_typed_default(DataType::SecurePayload, payload)
+                .add_typed_default(DataType::Version, DataValue::Str("1.1".into()))
+        ));
+    }
+    for version in ["", "01.1", "1.01", "1", "1.1 "] {
+        assert!(!is_password_receipt_query(
+            &CommunicationValue::new(CommunicationType::PasswordEnrollmentStatus)
+                .add_typed_default(DataType::SecurePayload, DataValue::Bytes(vec![1]))
+                .add_typed_default(DataType::Version, DataValue::Str(version.into()))
+        ));
+    }
+}
 
 #[test]
 fn managed_call_allowlist_is_local_and_excludes_results_and_direct_revocation() {

@@ -31,8 +31,8 @@ pub struct CallOutboxHealth {
     pub pending_key_envelopes: u64,
 }
 
-const MIGRATION: &str = "
-CREATE TABLE IF NOT EXISTS call_schema_migrations (version INTEGER PRIMARY KEY);
+const STORAGE_FORMAT: i64 = 0x4F4D4331; // "OMC1", the directly created call layout.
+const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS managed_calls (
  authority TEXT NOT NULL, call_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision >= 0),
  state_json TEXT NOT NULL, PRIMARY KEY(authority, call_id));
@@ -56,30 +56,26 @@ CREATE TABLE IF NOT EXISTS managed_call_effects (
  claim_generation INTEGER NOT NULL DEFAULT 0, claim_until_ms INTEGER,
  last_error TEXT);
 CREATE INDEX IF NOT EXISTS managed_call_effects_due ON managed_call_effects(state, next_attempt_ms, claim_until_ms);
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(1);
+CREATE INDEX IF NOT EXISTS managed_call_effects_call_lease ON managed_call_effects(authority, call_id, state, claim_until_ms);
 CREATE TABLE IF NOT EXISTS managed_call_host (
  authority TEXT NOT NULL, call_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
  reservation_expires_at_ms INTEGER, legacy_principal_authority TEXT,
  PRIMARY KEY(authority,call_id),
  FOREIGN KEY(authority,call_id) REFERENCES managed_calls(authority,call_id));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(2);
 CREATE TABLE IF NOT EXISTS managed_call_legacy_envelopes (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,recipient TEXT NOT NULL,
  epoch INTEGER NOT NULL,inviter TEXT NOT NULL,payload BLOB NOT NULL,
  revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN(0,1)),
  PRIMARY KEY(authority,call_id,recipient,epoch),
  FOREIGN KEY(authority,call_id) REFERENCES managed_calls(authority,call_id));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(3);
 CREATE TABLE IF NOT EXISTS managed_call_guest_capabilities (
  id TEXT PRIMARY KEY, authority TEXT NOT NULL,call_id TEXT NOT NULL,
  token_hash BLOB NOT NULL,expires_at_ms INTEGER NOT NULL,max_uses INTEGER NOT NULL,
  uses INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,
  FOREIGN KEY(authority,call_id) REFERENCES managed_calls(authority,call_id));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(4);
 CREATE TABLE IF NOT EXISTS managed_call_credentials (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,principal TEXT NOT NULL,
  valid_until_ms INTEGER NOT NULL, PRIMARY KEY(authority,call_id,principal));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(5);
 CREATE TABLE IF NOT EXISTS managed_call_key_plans (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,epoch INTEGER NOT NULL,
  generation INTEGER NOT NULL,proposer TEXT NOT NULL,recipients_json TEXT NOT NULL,
@@ -87,7 +83,8 @@ CREATE TABLE IF NOT EXISTS managed_call_key_plans (
 CREATE TABLE IF NOT EXISTS managed_call_key_envelopes (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,epoch INTEGER NOT NULL,recipient TEXT NOT NULL,
  generation INTEGER NOT NULL,payload BLOB NOT NULL,staged INTEGER NOT NULL DEFAULT 0,
- activated INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(authority,call_id,epoch,recipient));
+ activated INTEGER NOT NULL DEFAULT 0,next_attempt_ms INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(authority,call_id,epoch,recipient));
 CREATE TABLE IF NOT EXISTS managed_call_key_operations (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
  payload BLOB NOT NULL,PRIMARY KEY(authority,call_id,actor,operation_id));
@@ -95,15 +92,12 @@ CREATE TABLE IF NOT EXISTS managed_call_host_audit (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,revision INTEGER NOT NULL,
  operation_id TEXT NOT NULL,event_kind TEXT NOT NULL,created_at_ms INTEGER NOT NULL,
  PRIMARY KEY(authority,call_id,revision));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(6);
 CREATE TABLE IF NOT EXISTS managed_call_presence (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,empty_since_ms INTEGER,
  observed_at_ms INTEGER NOT NULL,PRIMARY KEY(authority,call_id));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(7);
 CREATE TABLE IF NOT EXISTS managed_call_webhook_receipts (
  authority TEXT NOT NULL,call_id TEXT NOT NULL,event_id TEXT NOT NULL,
  created_at_ms INTEGER NOT NULL,PRIMARY KEY(authority,call_id,event_id));
-INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(8);
 CREATE TABLE IF NOT EXISTS managed_call_write_budgets (
  authority TEXT NOT NULL,actor TEXT NOT NULL,window_start_ms INTEGER NOT NULL,
  operations INTEGER NOT NULL,PRIMARY KEY(authority,actor));
@@ -134,6 +128,16 @@ impl SqliteCallRepository {
         let max_pending_key_epochs = setting("CALL_MAX_PENDING_KEY_EPOCHS", 4)?;
         let max_calls_per_principal = setting("CALL_MAX_CALLS_PER_USER", 16)?;
         let mut db = Connection::open(path).map_err(storage)?;
+        let format: i64 = db
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .map_err(storage)?;
+        let has_schema: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%')",
+            [], |row| row.get(0),
+        ).map_err(storage)?;
+        if format != STORAGE_FORMAT && (format != 0 || has_schema) {
+            return Err(CallError::StorageUnavailable);
+        }
         db.busy_timeout(Duration::from_secs(5)).map_err(storage)?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
@@ -142,35 +146,9 @@ impl SqliteCallRepository {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        tx.execute_batch(MIGRATION).map_err(storage)?;
-        if !tx.prepare("SELECT 1 FROM pragma_table_info('managed_call_key_envelopes') WHERE name='next_attempt_ms'").map_err(storage)?.exists([]).map_err(storage)? {
-            tx.execute_batch("ALTER TABLE managed_call_key_envelopes ADD COLUMN next_attempt_ms INTEGER NOT NULL DEFAULT 0").map_err(storage)?;
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(9)",
-            [],
-        )
-        .map_err(storage)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(10)",
-            [],
-        )
-        .map_err(storage)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO call_schema_migrations(version) VALUES(11)",
-            [],
-        )
-        .map_err(storage)?;
-        let schema: i64 = tx
-            .query_row(
-                "SELECT MAX(version) FROM call_schema_migrations",
-                [],
-                |row| row.get(0),
-            )
+        tx.execute_batch(SCHEMA).map_err(storage)?;
+        tx.pragma_update(None, "application_id", STORAGE_FORMAT)
             .map_err(storage)?;
-        if schema > 11 {
-            return Err(CallError::StorageUnavailable);
-        }
         tx.commit().map_err(storage)?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
@@ -310,6 +288,7 @@ impl SqliteCallRepository {
 
     /// Import only absent aggregates. Restarts must not overwrite restrictions,
     /// revocations, or ownership changes with the old compatibility projection.
+    #[cfg(test)]
     pub async fn insert_legacy(&self, call: Call, created_at_ms: i64) -> Result<(), CallError> {
         call.validate()?;
         if created_at_ms < 0 {
@@ -943,7 +922,27 @@ impl CallRepository for SqliteCallRepository {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(storage)?;
             let mut claims = Vec::new();
             {
-                let mut stmt = tx.prepare("SELECT id,authority,call_id,revision,effect_json,claim_generation,attempts FROM managed_call_effects WHERE (state='pending' AND next_attempt_ms<=?1) OR (state='claimed' AND claim_until_ms<=?1) ORDER BY next_attempt_ms,id LIMIT ?2").map_err(storage)?;
+                // At equal due times, enforcement precedes inspection and notification work.
+                let mut stmt = tx.prepare("WITH effects AS NOT MATERIALIZED (
+                    SELECT e.*, CASE WHEN json_extract(e.effect_json,'$.effect') IN (
+                        'reconcile_member','remove_member','ensure_revoked','mute_microphone_now',
+                        'bound_microphone_mute','revoke_envelopes','revoke_envelopes_through',
+                        'request_key_rotation','end_room','ensure_ended','revoke_links'
+                    ) THEN 0 ELSE 1 END AS priority
+                    FROM managed_call_effects e
+                )
+                    SELECT e.id,e.authority,e.call_id,e.revision,e.effect_json,e.claim_generation,e.attempts
+                    FROM effects e
+                    WHERE ((e.state='pending' AND e.next_attempt_ms<=?1) OR (e.state='claimed' AND e.claim_until_ms<=?1))
+                    AND NOT EXISTS (SELECT 1 FROM managed_call_effects active
+                        WHERE active.authority=e.authority AND active.call_id=e.call_id
+                        AND active.state='claimed' AND active.claim_until_ms>?1)
+                    AND NOT EXISTS (SELECT 1 FROM effects earlier
+                        WHERE earlier.authority=e.authority AND earlier.call_id=e.call_id
+                        AND ((earlier.state='pending' AND earlier.next_attempt_ms<=?1)
+                            OR (earlier.state='claimed' AND earlier.claim_until_ms<=?1))
+                        AND (earlier.next_attempt_ms,earlier.priority,earlier.id)<(e.next_attempt_ms,e.priority,e.id))
+                    ORDER BY e.next_attempt_ms,e.priority,e.id LIMIT ?2").map_err(storage)?;
                 let rows = stmt.query_map(params![now_ms, limit as i64], |row| Ok((
                     row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, u64>(3)?,
                     row.get::<_, String>(4)?, row.get::<_, u64>(5)?, row.get::<_, u32>(6)?))).map_err(storage)?;

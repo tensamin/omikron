@@ -1876,7 +1876,7 @@ dependencies = [
 [[package]]
 name = "mtp"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "mtp-client",
  "mtp-codec",
@@ -1894,7 +1894,7 @@ dependencies = [
 [[package]]
 name = "mtp-client"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -1907,7 +1907,7 @@ dependencies = [
 [[package]]
 name = "mtp-codec"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "base64 0.23.1",
  "byteorder",
@@ -1921,7 +1921,7 @@ dependencies = [
 [[package]]
 name = "mtp-common"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "js-sys",
  "rand 0.10.3",
@@ -1931,7 +1931,7 @@ dependencies = [
 [[package]]
 name = "mtp-core"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "async-trait",
  "mtp-codec",
@@ -1945,7 +1945,7 @@ dependencies = [
 [[package]]
 name = "mtp-crypto"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1968,7 +1968,7 @@ dependencies = [
 [[package]]
 name = "mtp-files"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "mtp-crypto",
  "rand 0.10.3",
@@ -1979,7 +1979,7 @@ dependencies = [
 [[package]]
 name = "mtp-h3"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1996,7 +1996,7 @@ dependencies = [
 [[package]]
 name = "mtp-host"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -2012,7 +2012,7 @@ dependencies = [
 [[package]]
 name = "mtp-native"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "async-trait",
  "mtp-codec",
@@ -2032,7 +2032,7 @@ dependencies = [
 [[package]]
 name = "mtp-pipes"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -2048,17 +2048,17 @@ dependencies = [
 [[package]]
 name = "mtp-type-map"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "serde",
  "serde-saphyr",
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "mtp-webserver"
 version = "0.4.0"
-source = "git+https://github.com/Nonanium/MTP.git?rev=87c535650a3a33b166139b02cdd7327d412d3bca#87c535650a3a33b166139b02cdd7327d412d3bca"
+source = "git+https://github.com/Nonanium/MTP.git?rev=eef7562be64e77d8c29ba5af6df7596073e3c9f2#eef7562be64e77d8c29ba5af6df7596073e3c9f2"
 dependencies = [
  "bytes",
  "h3",
@@ -3483,7 +3483,7 @@ dependencies = [
 [[package]]
 name = "tau"
 version = "0.1.0"
-source = "git+https://github.com/TensaminDev/Tau.git?rev=ccbdcb81df00d626da16071c4c8b0b1ec803f87c#ccbdcb81df00d626da16071c4c8b0b1ec803f87c"
+source = "git+https://github.com/TensaminDev/Tau.git?rev=d6183368f3e2b91b3c3d86eae3802654b349be10#d6183368f3e2b91b3c3d86eae3802654b349be10"
 dependencies = [
  "dashmap",
  "libc",
@@ -3500,7 +3500,7 @@ dependencies = [
 [[package]]
 name = "tau-relay-protocol"
 version = "0.1.0"
-source = "git+https://github.com/TensaminDev/Tau.git?rev=ccbdcb81df00d626da16071c4c8b0b1ec803f87c#ccbdcb81df00d626da16071c4c8b0b1ec803f87c"
+source = "git+https://github.com/TensaminDev/Tau.git?rev=d6183368f3e2b91b3c3d86eae3802654b349be10#d6183368f3e2b91b3c3d86eae3802654b349be10"
 dependencies = [
  "base64 0.22.1",
  "mtp",

@@ -9,6 +9,7 @@ use routes::{client_changed_target, signed_positive_iota_id};
 #[cfg(test)]
 use routes::{iota_activation_snapshot, iota_user_snapshot};
 mod presence;
+mod presence_projection;
 mod requests;
 use super::capabilities::PeerCapabilities;
 use crate::{
@@ -213,6 +214,7 @@ pub struct SessionPresenceState {
     pub subscribed_user_ids: Vec<i64>,
     pub pending: bool,
     pub generation: u64,
+    projection: Option<presence_projection::ContactPresence>,
 }
 
 #[derive(Debug, thiserror::Error)]

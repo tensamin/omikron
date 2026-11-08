@@ -25,6 +25,21 @@ use uuid::Uuid;
 
 static NEXT_POLICY_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
+fn is_password_receipt_query(frame: &CommunicationValue) -> bool {
+    frame.is_type(CommunicationType::PasswordEnrollmentStatus)
+        && frame
+            .get_data(DataType::SecurePayload)
+            .and_then(DataValue::as_bytes)
+            .is_some_and(|bytes| !bytes.is_empty() && bytes.len() <= 512 * 1024)
+        && frame
+            .get_data(DataType::Version)
+            .and_then(DataValue::as_str)
+            .is_some_and(|text| {
+                mtp::type_map::Version::parse(text)
+                    .is_some_and(|version| version.to_string() == text)
+            })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceClass {
     Desktop,
@@ -507,6 +522,13 @@ impl ClientConnection {
                     return;
                 }
                 let mut request = authenticated_peer_control_request(&cv, self.user_id);
+                if request.is_type(CommunicationType::GetChats) {
+                    request.remove_data(DataType::SessionId);
+                    request = request.add_typed_default(
+                        DataType::SessionId,
+                        DataValue::UnsignedNumber(self.session_id.into()),
+                    );
+                }
                 if relay_router::is_relay_receipt_page(&request) {
                     request.remove_data(DataType::SessionId);
                     request = request.add_typed_default(
@@ -514,7 +536,20 @@ impl ClientConnection {
                         DataValue::UnsignedNumber(self.session_id.into()),
                     );
                 }
-                match rho.await_peer_control(&request).await {
+                let response = async {
+                    let response = rho.await_peer_control(&request).await?;
+                    if request.is_type(CommunicationType::GetChats)
+                        && response.is_type(CommunicationType::GetChats)
+                    {
+                        rho.get_iota_connection()
+                            .enrich_chat_snapshot(response, self.user_id, self.session_id as i64)
+                            .await
+                    } else {
+                        Ok(response)
+                    }
+                }
+                .await;
+                match response {
                     Ok(response) => {
                         // Assignment publication needs this write lock. Keep the
                         // authorization check valid through account-data delivery.
@@ -675,7 +710,7 @@ impl ClientConnection {
                     return;
                 };
                 if cv.receiver() != Some(rho.get_iota_id().await)
-                    || cv.payload().as_encrypted().is_none()
+                    || (cv.payload().as_encrypted().is_none() && !is_password_receipt_query(&cv))
                 {
                     self.send_error_response(message_id, CommunicationType::ErrorInvalidData)
                         .await;

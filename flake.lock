@@ -20,17 +20,17 @@
     "mtp-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1793191985,
-        "narHash": "sha256-ZdN5I6IDRprF52quAptff1GeKDsT8swTThYg7TNMiPc=",
+        "lastModified": 1794088961,
+        "narHash": "sha256-2IPy6EQV/s01kKmhpWEyyZmpqULsccyJs9L3QxEzq+A=",
         "owner": "Nonanium",
         "repo": "MTP",
-        "rev": "87c535650a3a33b166139b02cdd7327d412d3bca",
+        "rev": "eef7562be64e77d8c29ba5af6df7596073e3c9f2",
         "type": "github"
       },
       "original": {
         "owner": "Nonanium",
         "repo": "MTP",
-        "rev": "87c535650a3a33b166139b02cdd7327d412d3bca",
+        "rev": "eef7562be64e77d8c29ba5af6df7596073e3c9f2",
         "type": "github"
       }
     },
@@ -83,17 +83,17 @@
     "tau-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1793300418,
-        "narHash": "sha256-7DiOXeisXIB2oR1/mB4lFTXmeu4GlmiqYA3nn1YbSEE=",
+        "lastModified": 1794089167,
+        "narHash": "sha256-Sc/xlbKM7g1ubFTWYTUc8KVKcreTahOj/hbm1lWm3JI=",
         "owner": "TensaminDev",
         "repo": "Tau",
-        "rev": "ccbdcb81df00d626da16071c4c8b0b1ec803f87c",
+        "rev": "d6183368f3e2b91b3c3d86eae3802654b349be10",
         "type": "github"
       },
       "original": {
         "owner": "TensaminDev",
         "repo": "Tau",
-        "rev": "ccbdcb81df00d626da16071c4c8b0b1ec803f87c",
+        "rev": "d6183368f3e2b91b3c3d86eae3802654b349be10",
         "type": "github"
       }
     },

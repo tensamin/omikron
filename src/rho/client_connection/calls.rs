@@ -22,9 +22,9 @@ pub(super) fn call_error_type(error: &CallServiceError) -> CommunicationType {
         CallServiceError::NotFound => CommunicationType::ErrorNotFound,
         CallServiceError::NotAuthorized => CommunicationType::ErrorNotAuthenticated,
         CallServiceError::InvalidUser => CommunicationType::ErrorInvalidUserId,
-        CallServiceError::InvalidRequest
-        | CallServiceError::InvalidMigration { .. }
-        | CallServiceError::AuthorityMappingChanged { .. } => CommunicationType::ErrorInvalidData,
+        CallServiceError::InvalidRequest | CallServiceError::AuthorityMappingChanged { .. } => {
+            CommunicationType::ErrorInvalidData
+        }
         CallServiceError::ResourceLimit => CommunicationType::ErrorInternal,
         CallServiceError::TimedOut { .. } | CallServiceError::DeliveryFailed => {
             CommunicationType::ErrorInternal
@@ -43,7 +43,6 @@ fn call_error_response(message_id: u32, error: &CallServiceError) -> Communicati
         CallServiceError::NotAuthorized => "call_not_authorized",
         CallServiceError::InvalidUser => "invalid_user",
         CallServiceError::InvalidRequest => "invalid_request",
-        CallServiceError::InvalidMigration { .. } => "invalid_migration",
         CallServiceError::AuthorityMappingChanged { .. } => "authority_mapping_changed",
     };
     let response = CommunicationValue::new(call_error_type(error))

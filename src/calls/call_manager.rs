@@ -2,7 +2,6 @@ use crate::calls::{
     call_group::{CallGroup, CallMember, CallRole, PendingCallInvite},
     call_util::LiveKitService,
     error::CallError,
-    persistence::{CallPersistence, RestoredCall},
     repository::SqliteCallRepository,
 };
 use crate::config::CallLimits;
@@ -26,8 +25,6 @@ pub enum CallServiceError {
     InvalidUser,
     #[error("invalid request")]
     InvalidRequest,
-    #[error("legacy call {call_id} has no unambiguous authorized owner")]
-    InvalidMigration { call_id: Uuid },
     #[error("call {call_id} authority mapping changed; an explicit migration is required")]
     AuthorityMappingChanged { call_id: Uuid },
     #[error("resource limit reached")]
@@ -102,6 +99,22 @@ mod tests {
             .await
             .unwrap();
         (manager, id)
+    }
+
+    #[tokio::test]
+    async fn call_listing_does_not_turn_a_repository_failure_into_an_empty_snapshot() {
+        let (mut manager, _) = manager_with_call().await;
+        let directory = std::env::temp_dir().join(format!("tensamin-call-list-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("calls.sqlite");
+        manager.repository = Some(Arc::new(SqliteCallRepository::open(&path).unwrap()));
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection.execute("DROP TABLE managed_calls", []).unwrap();
+        }
+        assert!(manager.get_call_groups(1).await.is_err());
+        drop(manager);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -184,124 +197,6 @@ mod tests {
             domain::CallRole::Member
         );
     }
-
-    #[tokio::test]
-    async fn migration_preserves_a_demoted_creator_and_the_existing_administrator() {
-        let (manager, id) = manager_with_call().await;
-        let until = CallManager::timestamp() + 60_000;
-        let call = manager
-            .migrate_legacy(RestoredCall {
-                id,
-                owner: 1,
-                created_at_ms: 1,
-                members: vec![
-                    CallMember {
-                        user_id: 1,
-                        role: CallRole::Member,
-                        timeout_until_ms: Some(until),
-                        participating: false,
-                    },
-                    CallMember {
-                        user_id: 2,
-                        role: CallRole::Admin,
-                        timeout_until_ms: None,
-                        participating: false,
-                    },
-                ],
-                invites: vec![(
-                    3,
-                    PendingCallInvite {
-                        inviter_id: 2,
-                        created_at_ms: CallManager::timestamp(),
-                    },
-                )],
-            })
-            .unwrap();
-        assert_eq!(call.owner, manager.principal(2).unwrap());
-        let creator = call.member(&manager.principal(1).unwrap()).unwrap();
-        assert_eq!(creator.role, domain::CallRole::Member);
-        assert_eq!(creator.timeout_until_ms, Some(until));
-        assert!(call.invitations[0].delivery_ready);
-    }
-
-    #[tokio::test]
-    async fn migration_does_not_recreate_a_departed_creator() {
-        let (manager, id) = manager_with_call().await;
-        let call = manager
-            .migrate_legacy(RestoredCall {
-                id,
-                owner: 1,
-                created_at_ms: 1,
-                members: vec![CallMember {
-                    user_id: 2,
-                    role: CallRole::Admin,
-                    timeout_until_ms: None,
-                    participating: false,
-                }],
-                invites: Vec::new(),
-            })
-            .unwrap();
-        assert_eq!(call.owner, manager.principal(2).unwrap());
-        assert!(call.member(&manager.principal(1).unwrap()).is_none());
-    }
-
-    #[tokio::test]
-    async fn migration_rejects_missing_or_ambiguous_existing_administrators() {
-        let (manager, id) = manager_with_call().await;
-        for admins in [Vec::new(), vec![2, 3]] {
-            let members = admins
-                .into_iter()
-                .map(|user_id| CallMember {
-                    user_id,
-                    role: CallRole::Admin,
-                    timeout_until_ms: None,
-                    participating: false,
-                })
-                .collect();
-            assert!(
-                matches!(manager.migrate_legacy(RestoredCall { id, owner: 1, created_at_ms: 1,
-                members, invites: Vec::new() }), Err(CallServiceError::InvalidMigration { call_id }) if call_id == id)
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_reservation_import_is_durable_and_does_not_charge_quota_twice() {
-        let (mut manager, _) = manager_with_call().await;
-        manager.limits.max_calls_per_user = 1;
-        let path = std::env::temp_dir().join(format!(
-            "omikron-legacy-reservation-{}.sqlite3",
-            Uuid::new_v4()
-        ));
-        let legacy = Arc::new(CallPersistence::open(&path).unwrap());
-        let id = Uuid::new_v4();
-        let expires_at = CallManager::timestamp() + 30_000;
-        {
-            let db = rusqlite::Connection::open(&path).unwrap();
-            db.execute("INSERT INTO active_calls(id,owner,created_at_ms,empty_since_ms) VALUES (?1,7,-1,?2)",
-                rusqlite::params![id.to_string(), expires_at]).unwrap();
-        }
-        let manager = manager.with_persistence(legacy);
-        manager.restore().await.unwrap();
-        manager.restore().await.unwrap();
-        assert_eq!(
-            manager.reservation_created_at(7, id).await.unwrap(),
-            expires_at - 30_000
-        );
-        let repository = manager.repository().unwrap();
-        assert_eq!(
-            repository
-                .list()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|call| call.id.id == id)
-                .count(),
-            1
-        );
-        drop(manager);
-        std::fs::remove_file(path).unwrap();
-    }
 }
 impl From<domain::CallError> for CallServiceError {
     fn from(error: domain::CallError) -> Self {
@@ -334,7 +229,6 @@ pub struct CallManager {
     pub livekit: Arc<LiveKitService>,
     pub owner_omikron_id: u64,
     limits: CallLimits,
-    pub persistence: Option<Arc<CallPersistence>>,
     pub(crate) repository: Option<Arc<SqliteCallRepository>>,
     pub(crate) engine: Option<Arc<domain::CallEngine>>,
     owner_authority: Option<domain::CallAuthority>,
@@ -355,7 +249,6 @@ impl CallManager {
             livekit,
             owner_omikron_id: owner,
             limits,
-            persistence: None,
             repository: None,
             engine: None,
             owner_authority: None,
@@ -373,10 +266,6 @@ impl CallManager {
         self.engine = Some(engine);
         self.owner_authority = Some(owner_authority);
         self.principal_authority = Some(principal_authority);
-        self
-    }
-    pub fn with_persistence(mut self, persistence: Arc<CallPersistence>) -> Self {
-        self.persistence = Some(persistence);
         self
     }
     fn repository(&self) -> Result<&Arc<SqliteCallRepository>, CallServiceError> {
@@ -572,59 +461,6 @@ impl CallManager {
             key_installations: Vec::new(),
         })
     }
-    fn migrate_legacy(&self, old: RestoredCall) -> Result<domain::Call, CallServiceError> {
-        let admins = old
-            .members
-            .iter()
-            .filter(|m| m.role == CallRole::Admin)
-            .map(|m| m.user_id)
-            .collect::<Vec<_>>();
-        let owner = if admins.contains(&old.owner) {
-            old.owner
-        } else if admins.len() == 1 {
-            admins[0]
-        } else {
-            return Err(CallServiceError::InvalidMigration { call_id: old.id });
-        };
-        let mut call = self.initial_call(old.id, owner, domain::CallLifecycle::Active)?;
-        call.members = old
-            .members
-            .into_iter()
-            .map(|member| {
-                Ok(domain::CallMember {
-                    principal: self.principal(member.user_id)?,
-                    role: if member.user_id == owner {
-                        domain::CallRole::Owner
-                    } else if member.role == CallRole::Admin {
-                        domain::CallRole::Moderator
-                    } else {
-                        domain::CallRole::Member
-                    },
-                    authorized: true,
-                    approved: true,
-                    guest: false,
-                    restrictions: domain::Restrictions::default(),
-                    overrides: domain::PermissionOverrides::default(),
-                    timeout_until_ms: member.timeout_until_ms,
-                })
-            })
-            .collect::<Result<Vec<_>, domain::CallError>>()?;
-        call.invitations = old
-            .invites
-            .into_iter()
-            .map(|(user, invite)| {
-                Ok(domain::Invitation {
-                    recipient: self.principal(user)?,
-                    inviter: self.principal(invite.inviter_id)?,
-                    expires_at_ms: invite
-                        .created_at_ms
-                        .saturating_add(call.policy.invite_ttl_ms),
-                    delivery_ready: true,
-                })
-            })
-            .collect::<Result<Vec<_>, domain::CallError>>()?;
-        Ok(call)
-    }
     pub async fn restore(&self) -> Result<(), CallServiceError> {
         let repository = self.repository()?;
         for call in repository.list().await? {
@@ -634,57 +470,6 @@ impl CallManager {
                 return Err(CallServiceError::AuthorityMappingChanged {
                     call_id: call.id.id,
                 });
-            }
-        }
-        if let Some(legacy) = &self.persistence {
-            let legacy = legacy.clone();
-            let now = Self::now_ms()?;
-            let max_age = self
-                .limits
-                .max_call_age
-                .as_millis()
-                .try_into()
-                .unwrap_or(i64::MAX);
-            let (calls, reservations) = tokio::task::spawn_blocking(move || {
-                Ok::<_, rusqlite::Error>((
-                    legacy.restore(now, max_age)?,
-                    legacy.restore_reservations(now)?,
-                ))
-            })
-            .await
-            .map_err(|_| CallServiceError::DeliveryFailed)?
-            .map_err(|_| CallServiceError::DeliveryFailed)?;
-            for old in calls {
-                match repository.read(self.call_id(old.id)?).await {
-                    Ok(_) => continue,
-                    Err(domain::CallError::NotFound) => {}
-                    Err(error) => return Err(error.into()),
-                }
-                let created_at_ms = old.created_at_ms;
-                repository
-                    .insert_legacy(self.migrate_legacy(old)?, created_at_ms)
-                    .await?;
-            }
-            for reservation in reservations {
-                let call_id = self.call_id(reservation.id)?;
-                match repository.read(call_id).await {
-                    Ok(_) => continue,
-                    Err(domain::CallError::NotFound) => {}
-                    Err(error) => return Err(error.into()),
-                }
-                repository
-                    .reserve(
-                        self.initial_call(
-                            reservation.id,
-                            reservation.owner,
-                            domain::CallLifecycle::Reserved,
-                        )?,
-                        reservation.created_at_ms,
-                        reservation.expires_at_ms,
-                        self.limits.max_calls_per_user,
-                        true,
-                    )
-                    .await?;
             }
         }
         for call in repository.list().await? {
@@ -824,24 +609,34 @@ impl CallManager {
         #[cfg(not(test))]
         None
     }
-    pub async fn get_call_groups(&self, user: u64) -> Vec<Arc<CallGroup>> {
+    pub async fn get_call_groups(
+        &self,
+        user: u64,
+    ) -> Result<Vec<Arc<CallGroup>>, CallServiceError> {
         let ids = if let Some(repository) = &self.repository {
-            match repository.list().await {
-                Ok(calls) => calls.into_iter().map(|c| c.id.id).collect::<Vec<_>>(),
-                Err(_) => return Vec::new(),
-            }
+            repository
+                .list()
+                .await?
+                .into_iter()
+                .map(|c| c.id.id)
+                .collect::<Vec<_>>()
         } else {
             self.groups.iter().map(|g| *g.key()).collect()
         };
         let mut groups = Vec::new();
         for id in ids {
-            if let Some(group) = self.get_call(id).await
+            let group = if self.repository.is_some() {
+                self.refresh(id).await?
+            } else {
+                self.get_call(id).await
+            };
+            if let Some(group) = group
                 && group.is_related(user).await
             {
                 groups.push(group);
             }
         }
-        groups
+        Ok(groups)
     }
     pub fn should_forward_invite(&self, from: u64, to: u64) -> bool {
         from != to
