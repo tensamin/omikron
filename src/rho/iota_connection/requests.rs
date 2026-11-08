@@ -471,9 +471,6 @@ fn validate_chat_read_response(
                 {
                     return Err(invalid());
                 }
-                // Historical association evidence deliberately has no active
-                // node/signing-key fields. The Client verifies its authority
-                // signature and purpose before using the historical file key.
                 return Ok(());
             }
             let node = response
