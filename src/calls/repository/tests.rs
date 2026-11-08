@@ -130,6 +130,18 @@ fn counts(repo: &SqliteCallRepository) -> Vec<i64> {
     .collect()
 }
 
+fn pending_effects(repo: &SqliteCallRepository) -> Vec<CallEffect> {
+    let db = repo.db.lock().unwrap();
+    let mut statement = db
+        .prepare("SELECT effect_json FROM managed_call_effects WHERE state='pending'")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| serde_json::from_str(&row.unwrap()).unwrap())
+        .collect()
+}
+
 #[tokio::test]
 async fn exact_replay_survives_restart_and_actor_removal_without_duplicate_outputs() {
     let file = Database::new();
@@ -367,13 +379,16 @@ async fn prepared_microphone_binding_survives_restart_and_reclaim() {
     )
     .await
     .unwrap();
-    let claim = repo
-        .claim_effects(1000, 1024)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|claim| matches!(claim.effect, CallEffect::MuteMicrophoneNow { .. }))
-        .unwrap();
+    let mut mute = None;
+    for _ in 0..pending_effects(&repo).len() {
+        let claim = repo.claim_effects(1000, 1).await.unwrap().pop().unwrap();
+        if matches!(claim.effect, CallEffect::MuteMicrophoneNow { .. }) {
+            mute = Some(claim);
+            break;
+        }
+        repo.finish_effect(claim, Ok(()), 1000).await.unwrap();
+    }
+    let claim = mute.expect("queued microphone effect");
     let binding = CallEffect::BoundMicrophoneMute {
         principal: principal(4),
         participant_sid: "PA_original".into(),
@@ -1036,8 +1051,8 @@ async fn credentials_are_revision_fenced_and_their_admission_window_is_durable()
     )
     .await
     .unwrap();
-    let claims = repo.claim_effects(1001, 1024).await.unwrap();
-    assert!(claims.iter().any(|claim|matches!(&claim.effect,CallEffect::EnsureRevoked { principal:target,credentials_valid_until_ms:3000 } if target==&principal(4))));
+    let effects = pending_effects(&repo);
+    assert!(effects.iter().any(|effect|matches!(effect,CallEffect::EnsureRevoked { principal:target,credentials_valid_until_ms:3000 } if target==&principal(4))));
     assert_eq!(
         repo.record_join_credential(call.id.clone(), principal(4), 1, 4000, 1002)
             .await,
@@ -1082,8 +1097,8 @@ async fn delayed_envelope_revocation_is_bounded_before_reinvitation() {
     repo.stage_epoch_envelope(call.id.clone(), actor(1), envelope(&call, 4, 2, now))
         .await
         .unwrap();
-    let claims = repo.claim_effects(now, 1024).await.unwrap();
-    assert!(claims.iter().any(|claim|matches!(&claim.effect,CallEffect::RevokeEnvelopesThrough { principal:target,max_epoch:1 } if target==&principal(4))));
+    let effects = pending_effects(&repo);
+    assert!(effects.iter().any(|effect|matches!(effect,CallEffect::RevokeEnvelopesThrough { principal:target,max_epoch:1 } if target==&principal(4))));
     assert!(
         repo.epoch_numbers(call.id, principal(4))
             .await
@@ -1217,7 +1232,8 @@ async fn ending_finalizes_only_after_required_cleanup_is_confirmed() {
     repo.transact(actor(1), request(&call, CallCommand::End), 1000)
         .await
         .unwrap();
-    for claim in repo.claim_effects(1000, 1024).await.unwrap() {
+    for _ in 0..pending_effects(&repo).len() {
+        let claim = repo.claim_effects(1000, 1).await.unwrap().pop().unwrap();
         let outcome = if matches!(claim.effect, CallEffect::EnsureEnded { .. }) {
             Err(CallError::MediaEnforcementPending)
         } else {
