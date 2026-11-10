@@ -229,6 +229,64 @@ async fn delivery_preserves_ciphertext_and_requires_the_recipient_connection_ack
 }
 
 #[tokio::test]
+async fn first_acknowledgement_waits_for_every_device_send() {
+    let fixture = Fixture::new().await;
+    let (other_host, other_peer, other_transport) = test_support::guest("anonymous").await;
+    let general = GeneralConnection::admit(
+        other_transport,
+        fixture.source.state.clone(),
+        &admission_engine(),
+    )
+    .unwrap();
+    *general.session_id.write().await = 43;
+    let other_client = ClientConnection::from_general(general, 7).await;
+    fixture
+        .rho
+        .add_client_connection(other_client.clone())
+        .await;
+    let blocked_send = other_client.is_open.write().await;
+    let request = request();
+    let (delivery, _) = decode(&request).unwrap();
+    let source = fixture.source.clone();
+    let mut operation = tokio::spawn(async move { deliver(&source, &request).await });
+    let first = tokio::time::timeout(Duration::from_secs(2), fixture.client_peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture
+        .client
+        .clone()
+        .handle_message(acknowledgement(first.id().unwrap(), &delivery))
+        .await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut operation)
+            .await
+            .is_err()
+    );
+    drop(blocked_send);
+    let second = tokio::time::timeout(Duration::from_secs(2), other_peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first.without_id().to_bytes().unwrap(),
+        second.without_id().to_bytes().unwrap()
+    );
+    let accepted = tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(acknowledgement_matches(&accepted, &delivery));
+
+    other_client.close().await;
+    other_peer.sender.close().await;
+    other_host.shutdown().await;
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn route_replacement_cancels_delivery_without_an_acknowledgement() {
     let fixture = Fixture::new().await;
     let source = fixture.source.clone();
