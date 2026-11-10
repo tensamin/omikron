@@ -138,6 +138,7 @@ pub struct ClientConnection {
     pub rho_connection: Arc<RwLock<Option<Arc<RhoConnection>>>>,
     pub(super) is_open: Arc<RwLock<bool>>,
     pub(super) native_forwarding: Arc<super::native_forwarding::NativeForwarding>,
+    pub(super) delivery_responses: Arc<tau::ResponseCorrelator>,
     message_slots: Arc<tokio::sync::Semaphore>,
     tasks: Arc<super::tasks::MessageTasks>,
     session_activity: Arc<RwLock<SessionActivity>>,
@@ -154,6 +155,9 @@ impl ClientConnection {
             rho_connection: general.rho_connection.clone(),
             is_open: Arc::new(RwLock::new(true)),
             native_forwarding: Arc::new(super::native_forwarding::NativeForwarding::default()),
+            delivery_responses: Arc::new(tau::ResponseCorrelator::with_next_id(
+                rand::random::<u32>().max(1),
+            )),
             sender: general.sender.clone(),
             receiver: general.receiver.clone(),
             user_id,
@@ -295,6 +299,21 @@ impl ClientConnection {
         if !*self.is_open.read().await {
             return;
         }
+
+        if cv.is_type(CommunicationType::Success)
+            || cv.get_comm_type_enum().is_some_and(tau::is_protocol_error)
+        {
+            if let Some(id) = cv.id()
+                && self.delivery_responses.complete(id, cv.clone())
+            {
+                return;
+            }
+
+            if cv.is_type(CommunicationType::Success) {
+                return;
+            }
+        }
+
         let Some(Ok(permit)) = self
             .tasks
             .while_connected(&self.receiver, self.message_slots.clone().acquire_owned())
@@ -449,13 +468,6 @@ impl ClientConnection {
                             .await
                             .ok();
                     }
-                }
-                return;
-            }
-
-            if cv.is_type(CommunicationType::Success) {
-                if let Some(rho) = self.get_rho_connection().await {
-                    rho.forward_relay_ack(self.user_id, message_id).await;
                 }
                 return;
             }
@@ -1023,6 +1035,7 @@ impl ClientConnection {
 
     /// Close the connection
     pub async fn close(&self) {
+        self.delivery_responses.close();
         let pause = self.native_forwarding.pause();
         pause.wait().await;
         let mut is_open_guard = self.is_open.write().await;
@@ -1096,6 +1109,7 @@ impl Clone for ClientConnection {
             rho_connection: Arc::clone(&self.rho_connection),
             is_open: Arc::clone(&self.is_open),
             native_forwarding: self.native_forwarding.clone(),
+            delivery_responses: self.delivery_responses.clone(),
             message_slots: Arc::clone(&self.message_slots),
             tasks: Arc::clone(&self.tasks),
             session_activity: Arc::clone(&self.session_activity),

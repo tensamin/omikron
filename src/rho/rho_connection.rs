@@ -621,16 +621,6 @@ impl RhoConnection {
         }
     }
 
-    pub async fn forward_relay_ack(&self, user_id: u64, frame_id: u32) {
-        if !self.owns_user(user_id) {
-            return;
-        }
-        let acknowledgement = CommunicationValue::new(CommunicationType::Success)
-            .with_id(frame_id)
-            .add_typed_default(DataType::UserId, DataValue::UnsignedNumber(user_id.into()));
-        self.iota_connection.send_message(&acknowledgement).await;
-    }
-
     /// Check if this RhoConnection contains a specific user ID
     #[allow(dead_code)]
     pub async fn contains_user(&self, user_id: &i64) -> bool {
@@ -676,7 +666,6 @@ mod tests {
         assert!(!old.contains_user(&7).await);
         let message = CommunicationValue::new(CommunicationType::Ping).with_id(100);
         old.message_to_iota(message.clone()).await;
-        old.forward_relay_ack(7, 101).await;
         assert!(old.send_relay_to_iota(&message).await.is_err());
         assert!(old.await_relay_to_iota(&message).await.is_err());
         assert!(

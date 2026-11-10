@@ -1,4 +1,5 @@
 use super::*;
+use crate::rho::connection::positive_data_i64;
 
 impl ProvisioningConnection {
     pub(super) async fn create(&self, request: &CommunicationValue) -> Result<(), &'static str> {
@@ -194,14 +195,9 @@ impl ProvisioningConnection {
     ) -> Result<ResolvedAccount, &'static str> {
         let mut lookup = CommunicationValue::new(CommunicationType::GetUserData)
             .with_sender(self.general.state.omega.omikron_id());
-        if let Some(user_id) = request
-            .get_data(DataType::UserId)
-            .and_then(DataValue::as_signed_number)
-        {
-            let id = i64::try_from(user_id)
-                .ok()
-                .filter(|id| *id > 0)
-                .ok_or("invalid user ID")?;
+        if request.get_data(DataType::UserId).is_some() {
+            let id = positive_data_i64(request, DataType::UserId, "user ID")
+                .map_err(|_| "invalid user ID")?;
             lookup = lookup.add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()));
         } else {
             let username = request
@@ -225,12 +221,7 @@ impl ProvisioningConnection {
             return Err("account not found");
         }
         let positive = |field| {
-            response
-                .get_data(field)
-                .and_then(DataValue::as_signed_number)
-                .and_then(|value| i64::try_from(value).ok())
-                .filter(|value| *value > 0)
-                .ok_or("invalid account")
+            positive_data_i64(&response, field, "account ID").map_err(|_| "invalid account")
         };
         let string = |field| {
             response

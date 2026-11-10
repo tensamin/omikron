@@ -1,4 +1,146 @@
 #[tokio::test]
+async fn correlated_replies_bypass_saturated_message_slots() {
+    use crate::rho::{
+        client_connection::ClientConnection,
+        connection::{GeneralConnection, admission_engine},
+        rho_connection::RhoConnection,
+        test_support,
+    };
+    use std::{sync::Arc, time::Duration};
+
+    let state = test_support::state();
+    let (host, peer, transport) = test_support::guest("anonymous").await;
+    let general = GeneralConnection::admit(transport, state.clone(), &admission_engine()).unwrap();
+    let _shutdown = general.shutdown.clone();
+    let iota = super::IotaConnection::from_general(general, 2).await;
+    let rho = Arc::new(RhoConnection::new(iota.clone(), vec![7]).await);
+    state.rho.add(rho.clone()).await;
+    let (client_host, client_peer, client_transport) = test_support::guest("anonymous").await;
+    let general = GeneralConnection::admit(client_transport, state, &admission_engine()).unwrap();
+    let client = ClientConnection::from_general(general, 7).await;
+    rho.add_client_connection(client).await;
+    iota.set_rho_connection(rho).await;
+    let slots = iota
+        .message_slots
+        .clone()
+        .acquire_many_owned(super::MAX_MESSAGE_HANDLERS as u32)
+        .await
+        .unwrap();
+    let reader = tokio::spawn(iota.clone().run());
+    let exchange = tokio::spawn({
+        let iota = iota.clone();
+        async move {
+            let sender = iota.sender.clone();
+            iota.waiting_tasks
+                .exchange(
+                    &CommunicationValue::new(CommunicationType::Ping).with_id(41),
+                    Duration::from_secs(2),
+                    |response| response.is_type(CommunicationType::Pong),
+                    |outbound| async move { sender.send(&outbound).await },
+                )
+                .await
+        }
+    });
+    let request = tokio::time::timeout(Duration::from_secs(2), peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.sender
+        .send(&CommunicationValue::new(CommunicationType::Relay).with_id(73))
+        .await
+        .unwrap();
+    peer.sender
+        .send(
+            &CommunicationValue::new(CommunicationType::SyncedSettingChanged)
+                .with_id(74)
+                .with_receiver(7),
+        )
+        .await
+        .unwrap();
+    // Fill the bounded pending queue, then verify overload still leaves replies readable.
+    let overload_id = 73 + super::MAX_MESSAGE_HANDLERS as u32;
+    for id in 75..=overload_id {
+        peer.sender
+            .send(&CommunicationValue::new(CommunicationType::Relay).with_id(id))
+            .await
+            .unwrap();
+    }
+    peer.sender
+        .send(&CommunicationValue::new(CommunicationType::Pong).with_id(request.id().unwrap()))
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(2), exchange)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.id(), Some(41));
+    assert!(response.is_type(CommunicationType::Pong));
+    let rejected = tokio::time::timeout(Duration::from_secs(2), peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rejected.is_type(CommunicationType::ErrorInternal));
+    assert_eq!(rejected.id(), Some(overload_id));
+
+    drop(slots);
+    let notification = tokio::time::timeout(Duration::from_secs(2), client_peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(notification.is_type(CommunicationType::SyncedSettingChanged));
+    assert_eq!(notification.id(), Some(74));
+    assert_eq!(notification.receiver(), Some(7));
+    client_peer.sender.close().await;
+    peer.sender.close().await;
+    tokio::time::timeout(Duration::from_secs(2), reader)
+        .await
+        .unwrap()
+        .unwrap();
+    host.shutdown().await;
+    client_host.shutdown().await;
+}
+
+#[tokio::test]
+async fn saturated_hosted_delivery_returns_a_retryable_error() {
+    use crate::rho::{
+        connection::{GeneralConnection, admission_engine},
+        rho_connection::RhoConnection,
+        test_support,
+    };
+    use std::{sync::Arc, time::Duration};
+
+    let state = test_support::state();
+    let (host, peer, transport) = test_support::guest("anonymous").await;
+    let general = GeneralConnection::admit(transport, state.clone(), &admission_engine()).unwrap();
+    let iota = super::IotaConnection::from_general(general, 2).await;
+    let rho = Arc::new(RhoConnection::new(iota.clone(), vec![7]).await);
+    state.rho.add(rho.clone()).await;
+    iota.set_rho_connection(rho).await;
+    let _capacity = iota
+        .delivery_slots
+        .clone()
+        .acquire_many_owned(iota.delivery_slots.available_permits() as u32)
+        .await
+        .unwrap();
+    let request = CommunicationValue::new(CommunicationType::Relay)
+        .with_id(72)
+        .add_typed_default(
+            DataType::Status,
+            DataValue::Str("tensamin-hosted-delivery-v1".into()),
+        );
+    iota.handle_message_inner(request).await;
+    let response = tokio::time::timeout(Duration::from_secs(2), peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.is_type(CommunicationType::ErrorInternal));
+    assert_eq!(response.id(), Some(72));
+    peer.sender.close().await;
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn timed_out_forward_retains_intent_and_rejects_transport_id_retry() {
     use crate::rho::{
         connection::{GeneralConnection, admission_engine},

@@ -27,6 +27,23 @@ use tokio::sync::RwLock;
 
 use super::rho_connection::RhoConnection;
 
+const MAX_MESSAGE_HANDLERS: usize = 32;
+
+fn is_iota_notification(frame: &CommunicationValue) -> bool {
+    matches!(
+        frame.get_comm_type_enum(),
+        Some(
+            CommunicationType::SyncedSettingChanged
+                | CommunicationType::UserBlobChanged
+                | CommunicationType::UserAssetChanged
+                | CommunicationType::BlockedUsersChanged
+                | CommunicationType::ReceiptPolicyChanged
+                | CommunicationType::MessageStoragePolicyChanged
+                | CommunicationType::PushNotification
+        )
+    )
+}
+
 pub(crate) fn contact_snapshot(value: &CommunicationValue) -> Option<(i64, i64, Vec<i64>)> {
     if !value.is_type(CommunicationType::AccountStateSnapshot)
         && !value.is_type(CommunicationType::AddConversation)
@@ -110,6 +127,7 @@ pub struct IotaConnection {
     pub waiting_tasks: tau::ResponseCorrelator,
     pub rho_connection: Arc<RwLock<Option<Arc<RhoConnection>>>>,
     message_slots: Arc<tokio::sync::Semaphore>,
+    delivery_slots: Arc<tokio::sync::Semaphore>,
     tasks: super::tasks::MessageTasks,
     mutation_journal_path: std::path::PathBuf,
 }
@@ -139,7 +157,8 @@ impl IotaConnection {
             node_id,
             client_version: general.client_version.read().await.clone(),
             waiting_tasks: tau::ResponseCorrelator::with_next_id(rand::random::<u32>().max(1)),
-            message_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+            message_slots: Arc::new(tokio::sync::Semaphore::new(MAX_MESSAGE_HANDLERS)),
+            delivery_slots: Arc::new(tokio::sync::Semaphore::new(MAX_MESSAGE_HANDLERS / 2)),
             tasks: super::tasks::MessageTasks::new(
                 general.shutdown.subscribe(),
                 general.state.config.message_drain,
@@ -190,22 +209,54 @@ impl IotaConnection {
             );
         }
         let self_clone = self.clone();
+        let mut pending = std::collections::VecDeque::new();
         loop {
             match self_clone
                 .tasks
-                .while_connected(&self_clone.receiver, self_clone.receiver.receive())
+                .while_connected(&self_clone.receiver, async {
+                    tokio::select! {
+                        received = self_clone.receiver.receive() => Some((received, None)),
+                        permit = self_clone.message_slots.clone().acquire_owned(), if !pending.is_empty() => {
+                            permit.ok().map(|permit| (
+                                Ok(pending.pop_front().expect("pending Iota frame")),
+                                Some(permit),
+                            ))
+                        }
+                    }
+                })
                 .await
+                .flatten()
             {
-                Some(Ok(cv)) => {
-                    let Some(Ok(permit)) = self_clone
-                        .tasks
-                        .while_connected(
-                            &self_clone.receiver,
-                            self_clone.message_slots.clone().acquire_owned(),
-                        )
-                        .await
-                    else {
-                        break;
+                Some((Ok(cv), permit)) => {
+                    if self_clone.complete_response(&cv).await {
+                        continue;
+                    }
+                    let permit = permit.or_else(|| {
+                        if pending.is_empty() {
+                            self_clone.message_slots.clone().try_acquire_owned().ok()
+                        } else {
+                            None
+                        }
+                    });
+                    let Some(permit) = permit else {
+                        // Queue work without hiding correlated replies behind it.
+                        if pending.len() < MAX_MESSAGE_HANDLERS {
+                            pending.push_back(cv);
+                            continue;
+                        }
+                        if is_iota_notification(&cv) || cv.is_type(CommunicationType::ChatSecretForward) {
+                            log_err!(self_clone.iota_id as i64, PrintType::Iota, "Iota notification queue exhausted; closing transport");
+                            self_clone.sender.close();
+                            break;
+                        }
+                        let latest = TypeMap::latest();
+                        let response = tau::error_response(
+                            &cv,
+                            CommunicationType::ErrorInternal,
+                            cv.type_map().unwrap_or(&latest),
+                        );
+                        self_clone.send_message(&response).await;
+                        continue;
                     };
                     let connection = self_clone.clone();
                     if let Err(error) = self_clone.tasks.spawn(async move {
@@ -222,7 +273,7 @@ impl IotaConnection {
                         break;
                     }
                 }
-                Some(Err(error)) => {
+                Some((Err(error), _)) => {
                     log_err!(
                         self_clone.iota_id as i64,
                         PrintType::Iota,
@@ -309,16 +360,41 @@ impl IotaConnection {
             .map_err(|error| error.to_string())
     }
 
-    async fn handle_message_inner(self: Arc<Self>, cv: CommunicationValue) {
-        // Revocation may use an authenticated replacement before it owns a
-        // route. Only its exact nonce-bound receipt can bypass route admission.
+    async fn complete_response(&self, cv: &CommunicationValue) -> bool {
+        let Some(id) = cv.id() else {
+            return false;
+        };
+        // Only the existing nonce-bound revocation receipt may bypass current-route admission.
         if self.node_id.is_some()
             && cv.is_type(CommunicationType::Success)
             && cv.get_data(DataType::Status).as_str() == Some("revoked")
             && cv.get_data(DataType::Uuid).as_str().is_some()
-            && let Some(id) = cv.id()
-            && self.waiting_tasks.complete(id, cv.clone())
         {
+            return self.waiting_tasks.complete(id, cv.clone());
+        }
+        if cv.is_type(CommunicationType::Relay)
+            || cv.is_type(CommunicationType::ChatSecretForward)
+            || is_iota_notification(cv)
+            || matches!(
+                relay_router::message_security_class(cv),
+                relay_router::MessageSecurityClass::RelayOnly
+            )
+        {
+            return false;
+        }
+        let current = self.get_rho_connection().await.is_some_and(|rho| {
+            std::ptr::eq(rho.get_iota_connection().as_ref(), self)
+                && self.state.rho.is_current_rho(&rho)
+        });
+        let completed = current && self.waiting_tasks.complete(id, cv.clone());
+        if completed {
+            log_cv_in!(PrintType::Iota, cv);
+        }
+        completed
+    }
+
+    async fn handle_message_inner(self: Arc<Self>, cv: CommunicationValue) {
+        if self.complete_response(&cv).await {
             return;
         }
         let current = self.get_rho_connection().await.is_some_and(|rho| {
@@ -357,15 +433,35 @@ impl IotaConnection {
             relay_router::message_security_class(&cv),
             relay_router::MessageSecurityClass::Unsupported
         ) {
-            // Correlated replies have their own request-specific type policy.
-            if self.waiting_tasks.complete(message_id, cv.clone()) {
-                return;
-            }
             self.send_error_response(message_id, CommunicationType::ErrorInvalidData, None)
                 .await;
             return;
         }
         if cv.is_type(CommunicationType::Relay) {
+            if super::hosted_delivery::is_delivery(&cv) {
+                let Ok(_delivery) = self.delivery_slots.clone().try_acquire_owned() else {
+                    self.send_error_response(message_id, CommunicationType::ErrorInternal, None)
+                        .await;
+                    return;
+                };
+                let response = match super::hosted_delivery::deliver(&self, &cv).await {
+                    Ok(response) => response.with_id(message_id),
+                    Err(error) => {
+                        log_err!(
+                            self.iota_id as i64,
+                            PrintType::Iota,
+                            "Hosted delivery failed (message_id={}): {}",
+                            message_id,
+                            error
+                        );
+                        CommunicationValue::new(CommunicationType::ErrorInvalidData)
+                            .with_id(message_id)
+                    }
+                };
+                self.send_message(&response).await;
+                return;
+            }
+
             let response = match relay_router::route_relay(
                 &self.state,
                 &self,
@@ -409,20 +505,8 @@ impl IotaConnection {
 
         log_cv_in!(PrintType::Iota, cv);
 
-        if cv.is_type(CommunicationType::SyncedSettingChanged)
-            || cv.is_type(CommunicationType::UserBlobChanged)
-            || cv.is_type(CommunicationType::UserAssetChanged)
-            || cv.is_type(CommunicationType::BlockedUsersChanged)
-            || cv.is_type(CommunicationType::ReceiptPolicyChanged)
-            || cv.is_type(CommunicationType::MessageStoragePolicyChanged)
-            || cv.is_type(CommunicationType::PushNotification)
-        {
+        if is_iota_notification(&cv) {
             self.forward_to_client(cv).await;
-            return;
-        }
-
-        let msg_id = message_id;
-        if self.waiting_tasks.complete(msg_id, cv.clone()) {
             return;
         }
 
