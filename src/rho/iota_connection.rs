@@ -219,15 +219,16 @@ impl IotaConnection {
                     if self_clone.complete_response(&cv).await {
                         continue;
                     }
-                    let Some(Ok(permit)) = self_clone
-                        .tasks
-                        .while_connected(
-                            &self_clone.receiver,
-                            self_clone.message_slots.clone().acquire_owned(),
-                        )
-                        .await
-                    else {
-                        break;
+                    let Ok(permit) = self_clone.message_slots.clone().try_acquire_owned() else {
+                        // Waiting here would hide replies behind the next request.
+                        let latest = TypeMap::latest();
+                        let response = tau::error_response(
+                            &cv,
+                            CommunicationType::ErrorInternal,
+                            cv.type_map().unwrap_or(&latest),
+                        );
+                        self_clone.send_message(&response).await;
+                        continue;
                     };
                     let connection = self_clone.clone();
                     if let Err(error) = self_clone.tasks.spawn(async move {

@@ -41,6 +41,10 @@ async fn correlated_replies_bypass_saturated_message_slots() {
         .unwrap()
         .unwrap();
     peer.sender
+        .send(&CommunicationValue::new(CommunicationType::Relay).with_id(73))
+        .await
+        .unwrap();
+    peer.sender
         .send(&CommunicationValue::new(CommunicationType::Pong).with_id(request.id().unwrap()))
         .await
         .unwrap();
@@ -51,6 +55,12 @@ async fn correlated_replies_bypass_saturated_message_slots() {
         .unwrap();
     assert_eq!(response.id(), Some(41));
     assert!(response.is_type(CommunicationType::Pong));
+    let rejected = tokio::time::timeout(Duration::from_secs(2), peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rejected.is_type(CommunicationType::ErrorInternal));
+    assert_eq!(rejected.id(), Some(73));
 
     drop(slots);
     peer.sender.close().await;
