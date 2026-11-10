@@ -10,14 +10,15 @@ async fn correlated_replies_bypass_saturated_message_slots() {
     let state = test_support::state();
     let (host, peer, transport) = test_support::guest("anonymous").await;
     let general = GeneralConnection::admit(transport, state.clone(), &admission_engine()).unwrap();
-    let iota = super::IotaConnection::from_general(general.clone(), 2).await;
+    let _shutdown = general.shutdown.clone();
+    let iota = super::IotaConnection::from_general(general, 2).await;
     let rho = Arc::new(RhoConnection::new(iota.clone(), vec![7]).await);
     state.rho.add(rho.clone()).await;
     iota.set_rho_connection(rho).await;
     let slots = iota
         .message_slots
         .clone()
-        .acquire_many_owned(32)
+        .acquire_many_owned(super::MAX_MESSAGE_HANDLERS as u32)
         .await
         .unwrap();
     let reader = tokio::spawn(iota.clone().run());

@@ -92,7 +92,7 @@ async fn deliver_to_client(
     payload: CommunicationValue,
     delivery: Delivery,
     generation: u64,
-    sent: tokio::sync::oneshot::Sender<()>,
+    send_finished: tokio::sync::oneshot::Sender<()>,
 ) -> Result<CommunicationValue, String> {
     let mut forwarding = client
         .native_forwarding
@@ -129,7 +129,7 @@ async fn deliver_to_client(
                 }
 
                 let result = client.send_relay(&outbound).await;
-                let _ = sent.send(());
+                let _ = send_finished.send(());
                 result
             }
         },
@@ -177,24 +177,24 @@ pub(super) async fn deliver(
         .user_route_generation(user_id, &rho)
         .ok_or("delivery route changed")?;
     let mut attempts = tokio::task::JoinSet::new();
-    let mut sends = Vec::new();
+    let mut send_completions = Vec::new();
 
     for client in rho.get_client_connections_for_user(user_id).await {
-        let (sent, finished) = tokio::sync::oneshot::channel();
-        sends.push(finished);
+        let (send_finished, completion) = tokio::sync::oneshot::channel();
+        send_completions.push(completion);
         attempts.spawn(deliver_to_client(
             client,
             rho.clone(),
             payload.clone(),
             delivery.clone(),
             generation,
-            sent,
+            send_finished,
         ));
     }
 
-    // An early acknowledgement may cancel other acknowledgement waits, but not another device's send.
-    for sent in sends {
-        let _ = sent.await;
+    // Every device send must finish or fail before an acknowledgement can cancel other waits.
+    for completion in send_completions {
+        let _ = completion.await;
     }
 
     while let Some(result) = attempts.join_next().await {
