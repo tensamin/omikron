@@ -231,7 +231,13 @@ impl IotaConnection {
                     if self_clone.complete_response(&cv).await {
                         continue;
                     }
-                    let permit = permit.or_else(|| self_clone.message_slots.clone().try_acquire_owned().ok());
+                    let permit = permit.or_else(|| {
+                        if pending.is_empty() {
+                            self_clone.message_slots.clone().try_acquire_owned().ok()
+                        } else {
+                            None
+                        }
+                    });
                     let Some(permit) = permit else {
                         // Queue work without hiding correlated replies behind it.
                         if pending.len() < MAX_MESSAGE_HANDLERS {
