@@ -366,6 +366,16 @@ impl IotaConnection {
             return;
         }
         if cv.is_type(CommunicationType::Relay) {
+            if super::hosted_delivery::is_delivery(&cv) {
+                let response = match super::hosted_delivery::deliver(&self, &cv).await {
+                    Ok(response) => response.with_id(message_id),
+                    Err(_) => CommunicationValue::new(CommunicationType::ErrorInvalidData)
+                        .with_id(message_id),
+                };
+                self.send_message(&response).await;
+                return;
+            }
+
             let response = match relay_router::route_relay(
                 &self.state,
                 &self,

@@ -1,6 +1,7 @@
 pub mod app_connection;
 pub mod client_connection;
 pub mod connection;
+mod hosted_delivery;
 pub mod iota_connection;
 mod native_forwarding;
 pub mod provisioning_connection;
