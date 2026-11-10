@@ -446,8 +446,17 @@ impl IotaConnection {
                 };
                 let response = match super::hosted_delivery::deliver(&self, &cv).await {
                     Ok(response) => response.with_id(message_id),
-                    Err(_) => CommunicationValue::new(CommunicationType::ErrorInvalidData)
-                        .with_id(message_id),
+                    Err(error) => {
+                        log_err!(
+                            self.iota_id as i64,
+                            PrintType::Iota,
+                            "Hosted delivery failed (message_id={}): {}",
+                            message_id,
+                            error
+                        );
+                        CommunicationValue::new(CommunicationType::ErrorInvalidData)
+                            .with_id(message_id)
+                    }
                 };
                 self.send_message(&response).await;
                 return;
