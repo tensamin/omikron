@@ -209,18 +209,40 @@ impl IotaConnection {
             );
         }
         let self_clone = self.clone();
+        let mut pending = std::collections::VecDeque::new();
         loop {
             match self_clone
                 .tasks
-                .while_connected(&self_clone.receiver, self_clone.receiver.receive())
+                .while_connected(&self_clone.receiver, async {
+                    tokio::select! {
+                        received = self_clone.receiver.receive() => Some((received, None)),
+                        permit = self_clone.message_slots.clone().acquire_owned(), if !pending.is_empty() => {
+                            permit.ok().map(|permit| (
+                                Ok(pending.pop_front().expect("pending Iota frame")),
+                                Some(permit),
+                            ))
+                        }
+                    }
+                })
                 .await
+                .flatten()
             {
-                Some(Ok(cv)) => {
+                Some((Ok(cv), permit)) => {
                     if self_clone.complete_response(&cv).await {
                         continue;
                     }
-                    let Ok(permit) = self_clone.message_slots.clone().try_acquire_owned() else {
-                        // Waiting here would hide replies behind the next request.
+                    let permit = permit.or_else(|| self_clone.message_slots.clone().try_acquire_owned().ok());
+                    let Some(permit) = permit else {
+                        // Queue work without hiding correlated replies behind it.
+                        if pending.len() < MAX_MESSAGE_HANDLERS {
+                            pending.push_back(cv);
+                            continue;
+                        }
+                        if is_iota_notification(&cv) || cv.is_type(CommunicationType::ChatSecretForward) {
+                            log_err!(self_clone.iota_id as i64, PrintType::Iota, "Iota notification queue exhausted; closing transport");
+                            self_clone.sender.close();
+                            break;
+                        }
                         let latest = TypeMap::latest();
                         let response = tau::error_response(
                             &cv,
@@ -245,7 +267,7 @@ impl IotaConnection {
                         break;
                     }
                 }
-                Some(Err(error)) => {
+                Some((Err(error), _)) => {
                     log_err!(
                         self_clone.iota_id as i64,
                         PrintType::Iota,

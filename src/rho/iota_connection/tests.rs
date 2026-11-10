@@ -1,6 +1,7 @@
 #[tokio::test]
 async fn correlated_replies_bypass_saturated_message_slots() {
     use crate::rho::{
+        client_connection::ClientConnection,
         connection::{GeneralConnection, admission_engine},
         rho_connection::RhoConnection,
         test_support,
@@ -14,6 +15,10 @@ async fn correlated_replies_bypass_saturated_message_slots() {
     let iota = super::IotaConnection::from_general(general, 2).await;
     let rho = Arc::new(RhoConnection::new(iota.clone(), vec![7]).await);
     state.rho.add(rho.clone()).await;
+    let (client_host, client_peer, client_transport) = test_support::guest("anonymous").await;
+    let general = GeneralConnection::admit(client_transport, state, &admission_engine()).unwrap();
+    let client = ClientConnection::from_general(general, 7).await;
+    rho.add_client_connection(client).await;
     iota.set_rho_connection(rho).await;
     let slots = iota
         .message_slots
@@ -45,6 +50,22 @@ async fn correlated_replies_bypass_saturated_message_slots() {
         .await
         .unwrap();
     peer.sender
+        .send(
+            &CommunicationValue::new(CommunicationType::SyncedSettingChanged)
+                .with_id(74)
+                .with_receiver(7),
+        )
+        .await
+        .unwrap();
+    // Fill the bounded pending queue, then verify overload still leaves replies readable.
+    let overload_id = 73 + super::MAX_MESSAGE_HANDLERS as u32;
+    for id in 75..=overload_id {
+        peer.sender
+            .send(&CommunicationValue::new(CommunicationType::Relay).with_id(id))
+            .await
+            .unwrap();
+    }
+    peer.sender
         .send(&CommunicationValue::new(CommunicationType::Pong).with_id(request.id().unwrap()))
         .await
         .unwrap();
@@ -60,15 +81,24 @@ async fn correlated_replies_bypass_saturated_message_slots() {
         .unwrap()
         .unwrap();
     assert!(rejected.is_type(CommunicationType::ErrorInternal));
-    assert_eq!(rejected.id(), Some(73));
+    assert_eq!(rejected.id(), Some(overload_id));
 
     drop(slots);
+    let notification = tokio::time::timeout(Duration::from_secs(2), client_peer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(notification.is_type(CommunicationType::SyncedSettingChanged));
+    assert_eq!(notification.id(), Some(74));
+    assert_eq!(notification.receiver(), Some(7));
+    client_peer.sender.close().await;
     peer.sender.close().await;
     tokio::time::timeout(Duration::from_secs(2), reader)
         .await
         .unwrap()
         .unwrap();
     host.shutdown().await;
+    client_host.shutdown().await;
 }
 
 #[tokio::test]
