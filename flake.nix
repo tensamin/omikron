@@ -7,7 +7,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     type-maps = {
-      url = "github:TensaminDev/Mtp-Type-Maps/bcaf5a2f1a43f1945fa531ecd688b31ae648919e";
+      url = "github:tensamin/mtp-type-maps";
       flake = false;
     };
     tau-src = {

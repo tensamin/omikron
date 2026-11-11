@@ -100,17 +100,16 @@
     "type-maps": {
       "flake": false,
       "locked": {
-        "lastModified": 1793217281,
-        "narHash": "sha256-bmf9YXqw/PsyN2F2E6kpfG3fQo9xkc31Yhb8chSwSfY=",
-        "owner": "TensaminDev",
-        "repo": "Mtp-Type-Maps",
-        "rev": "bcaf5a2f1a43f1945fa531ecd688b31ae648919e",
+        "lastModified": 1794392783,
+        "narHash": "sha256-VZ59lRIyy+FvglNcoI59qwtPSac6OIzzwz9bx2L0nfA=",
+        "owner": "tensamin",
+        "repo": "mtp-type-maps",
+        "rev": "167f869817f0dec4f364518889cc223f09d16e4a",
         "type": "github"
       },
       "original": {
-        "owner": "TensaminDev",
-        "repo": "Mtp-Type-Maps",
-        "rev": "bcaf5a2f1a43f1945fa531ecd688b31ae648919e",
+        "owner": "tensamin",
+        "repo": "mtp-type-maps",
         "type": "github"
       }
     }

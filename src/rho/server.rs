@@ -418,7 +418,6 @@ pub async fn start(
                 ConnectionKind::AnonymousClient
                     | ConnectionKind::RegisteringClient
                     | ConnectionKind::ProvisioningClient
-                    | ConnectionKind::TAuth
             ) {
                 match state
                     .rho_connection_limits
@@ -445,7 +444,6 @@ pub async fn start(
                 ConnectionKind::AnonymousClient
                     | ConnectionKind::RegisteringClient
                     | ConnectionKind::ProvisioningClient
-                    | ConnectionKind::TAuth
             ) {
                 let Some(peer_ip) = peer_ip else {
                     log_err!(
@@ -576,12 +574,7 @@ mod tests {
             test_support,
         };
         use tau::LifecycleState;
-        for role in [
-            "anonymous",
-            "registering-client",
-            "provisioning-client",
-            "tauth",
-        ] {
+        for role in ["anonymous", "registering-client", "provisioning-client"] {
             let state = test_support::state();
             let (host, client, connection) = test_support::guest(role).await;
             let general =

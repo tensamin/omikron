@@ -745,34 +745,6 @@ impl ClientConnection {
                 }
                 return;
             }
-            if matches!(
-                cv.get_comm_type_enum(),
-                Some(
-                    CommunicationType::TAuthAuthorize
-                        | CommunicationType::TAuthGrantList
-                        | CommunicationType::TAuthGrantRevoke
-                        | CommunicationType::TAuthGrantMetadataSet
-                )
-            ) {
-                let Some(rho) = self.get_rho_connection().await else {
-                    self.send_error_response(message_id, CommunicationType::ErrorNoIota)
-                        .await;
-                    return;
-                };
-                match rho
-                    .get_iota_connection()
-                    .clone()
-                    .await_response(&cv.with_sender(self.user_id), Some(Duration::from_secs(20)))
-                    .await
-                {
-                    Ok(response) => self.send_message(&response.with_id(message_id)).await,
-                    Err(_) => {
-                        self.send_error_response(message_id, CommunicationType::ErrorInternal)
-                            .await
-                    }
-                }
-                return;
-            }
             if cv.is_type(CommunicationType::GetUserData)
                 && let Some(anonymous) = {
                     if let Some(user_id) = cv
