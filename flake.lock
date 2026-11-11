@@ -100,11 +100,11 @@
     "type-maps": {
       "flake": false,
       "locked": {
-        "lastModified": 1794392783,
-        "narHash": "sha256-VZ59lRIyy+FvglNcoI59qwtPSac6OIzzwz9bx2L0nfA=",
+        "lastModified": 1794394360,
+        "narHash": "sha256-9/PdiYcG3pomq5FmixziF6LGT+m4YVIC2qZSvoOiVzE=",
         "owner": "tensamin",
         "repo": "mtp-type-maps",
-        "rev": "167f869817f0dec4f364518889cc223f09d16e4a",
+        "rev": "1f0c12e8be10c617d36d0210e9d62cc0a528b947",
         "type": "github"
       },
       "original": {
