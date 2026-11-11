@@ -787,9 +787,9 @@ impl ClientConnection {
             }
 
             if cv.is_type(CommunicationType::AccountStateRequest) {
-                if cv.get_data(DataType::Json).is_some() {
+                if cv.get_data(DataType::SyncPayload).is_some() {
                     // Scoped pages and acknowledgements are Iota-owned. Do not
-                    // add legacy SessionId fields or compose presence into their JSON.
+                    // add legacy SessionId fields or compose presence into their payload.
                     if tau::sync::decode_request(&cv).is_err() {
                         self.send_error_response(message_id, CommunicationType::ErrorInvalidData)
                             .await;
