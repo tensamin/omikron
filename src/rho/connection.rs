@@ -7,8 +7,8 @@ use crate::{
     app_state::AppState,
     log_err, log_in, log_out,
     rho::{
-        app_connection::AppConnection, client_connection::ClientConnection,
-        iota_connection::IotaConnection, provisioning_connection::ProvisioningConnection,
+        client_connection::ClientConnection, iota_connection::IotaConnection,
+        provisioning_connection::ProvisioningConnection,
         registration_connection::RegistrationConnection, rho_connection::RhoConnection,
     },
     util::logger::PrintType,
@@ -217,14 +217,6 @@ mod tests {
     }
 }
 
-/*
- * How a connection identified itself during the mtp handshake driven by
- * `server.rs` ("iota" / "client" authenticated logins, "anonymous"
- * unauthenticated). TAuth apps authenticate each scoped request after transport setup.
- * not reachable through it, since mtp's host only recognizes its own
- * `Identification`/`Register` hello frames; it is kept only so
- * `app_connection.rs` still compiles.
- */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[allow(dead_code)]
 pub enum ConnectionKind {
@@ -233,7 +225,6 @@ pub enum ConnectionKind {
     AnonymousClient,
     RegisteringClient,
     ProvisioningClient,
-    TAuth,
 }
 
 pub fn admission_engine() -> AdmissionEngine<ConnectionKind> {
@@ -253,7 +244,6 @@ pub fn admission_engine() -> AdmissionEngine<ConnectionKind> {
             Guest,
             ConnectionKind::ProvisioningClient,
         ),
-        ("tauth", Guest, ConnectionKind::TAuth),
     ] {
         rules
             .register(RoleRule {
@@ -443,11 +433,6 @@ impl GeneralConnection {
                     .await;
                 true
             }
-            ConnectionKind::TAuth => {
-                self.set_active_handler(ConnectionKind::TAuth);
-                self.migrate_phi().await;
-                true
-            }
         }
     }
 
@@ -623,10 +608,5 @@ impl GeneralConnection {
             .prepare_registration_route(user_id as i64, expected_iota_id)?;
         let client = ClientConnection::from_general(self.clone(), user_id).await;
         Some((client, rho, generation))
-    }
-
-    async fn migrate_phi(self: &Arc<Self>) {
-        let app_conn = AppConnection::from_general(self.clone(), self.id).await;
-        app_conn.run().await;
     }
 }

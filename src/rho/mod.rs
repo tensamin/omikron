@@ -1,4 +1,3 @@
-pub mod app_connection;
 pub mod client_connection;
 pub mod connection;
 mod hosted_delivery;

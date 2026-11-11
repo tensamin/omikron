@@ -83,7 +83,7 @@ impl IotaConnection {
                     | CommunicationType::FileFolderDelete
                     | CommunicationType::FilePlacementPut
                     | CommunicationType::FilePlacementDelete
-                    | CommunicationType::FileVersionPublish
+                    | CommunicationType::FilePublish
                     | CommunicationType::FileKeyEnvelopePut
                     | CommunicationType::FileMetadataPut
                     | CommunicationType::FileUploadStart
@@ -166,12 +166,6 @@ impl IotaConnection {
                                 ) | (
                                     Some(CommunicationType::GetChatSecret),
                                     Some(CommunicationType::ChatSecretResponse)
-                                ) | (
-                                    Some(CommunicationType::TAuthAuthorize),
-                                    Some(CommunicationType::TAuthAuthorizationResult)
-                                ) | (
-                                    Some(CommunicationType::TAuthExchangeCode),
-                                    Some(CommunicationType::TAuthExchangeCodeResponse)
                                 )
                             )
                     },
