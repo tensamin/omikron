@@ -74,6 +74,7 @@
             pkgs.pkg-config
           ];
           buildInputs = [
+            pkgs.aws-lc
             pkgs.openssl
             pkgs.sqlite
           ];
