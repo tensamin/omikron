@@ -281,7 +281,14 @@ impl ClientConnection {
             return;
         }
         log_cv_out!(PrintType::Client, &cv);
-        let _ = self.sender.send(cv).await;
+        if let Err(error) = self.sender.send(cv).await {
+            log_err!(
+                self.user_id as i64,
+                PrintType::Client,
+                "Failed to send message: {:?}",
+                error
+            );
+        }
     }
 
     pub async fn send_relay(&self, cv: &CommunicationValue) -> Result<(), String> {
