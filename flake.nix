@@ -15,7 +15,7 @@
       flake = false;
     };
     mtp-src = {
-      url = "github:Nonanium/MTP/eef7562be64e77d8c29ba5af6df7596073e3c9f2";
+      url = "github:Nonanium/MTP/d222dc19d38aa03f538ab167ca4e4a3b187b9320";
       flake = false;
     };
     iota-src = {
@@ -133,7 +133,7 @@
               pname = "omikron";
               version = "0.1.0";
               src = source;
-              hash = "sha256-F6/C3ttcIeRHHENxcb3K+L2Uw3fUE66iY5ryxd0WPCw=";
+              hash = "sha256-8jGaYshd4LNdPL02jWu+OxCvKEKsJ130Gk6y0/BQvIQ=";
             };
           };
           container = self.lib.mkContainer {
